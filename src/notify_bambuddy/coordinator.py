@@ -100,12 +100,22 @@ SERVICE_BACKOFF_SECONDS = 300.0
 #: the event loop every five second tick. Terminal sends ignore it.
 GATEWAY_BACKOFF_SECONDS = 60.0
 
-#: When a started tile has still not appeared on the phone, how long to stop
-#: starting more. Escalates per consecutive loss, mirroring the gateway's own
-#: ladder, because the usual cause (a stale start credential after an app
-#: update) is fixed only by the user opening the app, and every start sent
-#: before that is a push Apple discards while keeping its throttle shut.
-UNCONFIRMED_START_BACKOFF = (900.0, 3600.0, 10800.0)
+#: When a started tile has still not been CONFIRMED by the app, how long to
+#: stop starting more.
+#:
+#: The signal is genuinely ambiguous and the ladder is sized accordingly.
+#: "Still starting" means the app has not reported the tile back, and a tile
+#: that iOS displayed perfectly well produces exactly that reading while the
+#: app stays closed. From the server side it is indistinguishable from a start
+#: Apple discarded because the credential was stale.
+#:
+#: So this trades two costs. Backing off protects Apple's spawn budget when
+#: starts really are being discarded. Backing off too long denies a working
+#: phone its tiles, which is what a three hour step did on real hardware: the
+#: tile was on screen the whole time. Fifteen minutes twice, then half an
+#: hour, keeps the protection while capping the damage of guessing wrong at
+#: something a user would not notice as "broken".
+UNCONFIRMED_START_BACKOFF = (900.0, 900.0, 1800.0)
 
 
 
@@ -1195,10 +1205,13 @@ class Coordinator:
 
         The whole point of this method: `dismissed` is the user's decision and
         must be honoured forever, while `overdue`, `abandoned`, `expired` and
-        `never-started` are the gateway tidying up a tile whose print is very
-        possibly still running. Treating the second group like the first is
-        how an integration silently stops working for a printer whose ETA
-        happened to overrun by half an hour.
+        `overdue`, `abandoned` and `expired` are the gateway tidying up a tile
+        whose print is very possibly still running. Treating those like a
+        dismissal is how an integration silently stops working for a printer
+        whose ETA happened to overrun by half an hour.
+
+        `never-started` is its own case and is handled separately below,
+        because recreating on it duplicates a tile that is already on screen.
         """
         classified = await self._client.classify_gone(session.activity_id or "", error)
         reason = classified.end_reason
@@ -1227,6 +1240,28 @@ class Coordinator:
             return
 
         if reason == "script":
+            session.delivery = Delivery.ENDED
+            session.activity_id = None
+            self._store.save_session(session)
+            return
+
+        if reason == "never-started":
+            # The gateway believes this tile never reached the device, and is
+            # tidying its own record away. Recreating here is what produced a
+            # SECOND tile on a real phone: the first one was on screen the
+            # whole time, because a tile that iOS displayed but the app never
+            # reported back still looks "never started" from the server side.
+            #
+            # So this is the one reap that must not be retried. If the tile
+            # really never appeared, a replacement would hit exactly the same
+            # wall; if it did appear, a replacement duplicates it. Either way
+            # the session keeps running and the next PRINT gets a fresh tile.
+            log.info(
+                "Notify reaped the tile for %s as never-started. Not replacing it: if it "
+                "did reach your phone, a replacement would sit alongside it. Open the "
+                "Notify app once so the app can confirm tiles it receives.",
+                session.serial,
+            )
             session.delivery = Delivery.ENDED
             session.activity_id = None
             self._store.save_session(session)

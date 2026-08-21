@@ -25,7 +25,12 @@ from notify_bambuddy import coordinator as coordinator_module
 from notify_bambuddy.alerts import COOLDOWN_SECONDS, Alerts
 from notify_bambuddy.coordinator import Coordinator
 from notify_bambuddy.models import Outcome, Phase
-from notify_bambuddy.notify_client import NotifyAuthError, NotifyTransportError
+from notify_bambuddy.notify_client import (
+    ActivityStatus,
+    NotifyAuthError,
+    NotifyGone,
+    NotifyTransportError,
+)
 from notify_bambuddy.store import Store
 
 
@@ -1056,3 +1061,31 @@ def test_privacy_mode_keeps_the_job_name_out_of_the_start_log(clock, caplog):
     joined = " ".join(r.getMessage() for r in caplog.records)
     assert "Print started on" in joined, "the start line itself should still log"
     assert "Secret Prototype" not in joined, "privacy mode leaked the job name to the log"
+
+
+def test_a_never_started_reap_does_not_create_a_second_tile(clock):
+    """Regression, from a real print on real hardware: two tiles on one phone.
+
+    The gateway reaped a tile as `never-started`, which fell into the generic
+    "the gateway tidied this away, recreate it" branch. But the tile was on
+    the phone the whole time: a tile iOS displayed while the app stayed closed
+    is never reported back, and looks exactly like one that never arrived. The
+    replacement then sat alongside the original.
+
+    That reap is the one that must not be retried. If the tile really never
+    appeared a replacement hits the same wall; if it did, a replacement
+    duplicates it.
+    """
+    coord, notify, _ = build()
+    run(coord.handle(status(clock)))
+    session = coord._sessions[SERIAL]
+    first = session.activity_id
+    assert first, "no tile was started"
+
+    notify.states[first] = ActivityStatus(
+        activity_id=first, state="ended", end_reason="never-started", expires_at=None, raw={})
+    run(coord._handle_gone(session, NotifyGone("gone", 410, {}), clock.t))
+
+    started_after = [s for s in notify.started if s["activityId"] != first]
+    assert not started_after, "a second tile was created alongside one already on screen"
+    assert session.activity_id is None
