@@ -134,6 +134,9 @@ class Coordinator:
         #: When each printer first started reporting an inactive state while a
         #: session was still open. Feeds INACTIVE_GRACE_SECONDS.
         self._inactive_since: dict[str, float] = {}
+        #: Best-ranked outcome implied by any state seen during the current
+        #: inactive window, per printer. Cleared with `_inactive_since`.
+        self._inactive_outcome: dict[str, Outcome] = {}
 
         #: Sessions whose start is waiting for a tile slot to free up. The
         #: gateway reports the 5-tile cap as a 400, which every sane client
@@ -496,6 +499,7 @@ class Coordinator:
         self._sessions[serial] = session
         self._running_since.pop(serial, None)
         self._inactive_since.pop(serial, None)
+        self._inactive_outcome.pop(serial, None)
         return session
 
     async def _maybe_create_from_status(self, status: PrinterStatus, now: float) -> None:
@@ -638,6 +642,7 @@ class Coordinator:
 
         if status.state == STATE_PAUSE:
             self._inactive_since.pop(serial, None)
+            self._inactive_outcome.pop(serial, None)
             # BambuBuddy's own plate detection can pause a print seconds after
             # it starts, when it sees objects left on the bed. Rendering that
             # momentary pause would make every print's tile flicker through
@@ -649,6 +654,7 @@ class Coordinator:
 
         if status.state == STATE_RUNNING:
             self._inactive_since.pop(serial, None)
+            self._inactive_outcome.pop(serial, None)
             session.phase = Phase.PRINTING
             return
 
@@ -658,17 +664,28 @@ class Coordinator:
             # printer that keeps saying it for a while has stopped, and this
             # is the only way that is ever learned: nothing announces the end
             # of a print.
+            #
+            # The outcome is the BEST-ranked state seen anywhere in the
+            # window, not the state at its end. A finished printer reports
+            # FINISH and then settles to IDLE, often inside the grace window,
+            # and reading only the final frame closed those tiles as
+            # "Stopped" for prints that succeeded. The one glimpse of FINISH
+            # is the fact worth keeping; IDLE after it is just the printer
+            # going back to sleep.
             first = self._inactive_since.setdefault(serial, now)
+            seen = {
+                STATE_FINISH: Outcome.COMPLETED,
+                STATE_FAILED: Outcome.FAILED,
+            }.get(status.state, Outcome.ABORTED)
+            best = self._inactive_outcome.get(serial)
+            if best is None or seen.rank > best.rank:
+                self._inactive_outcome[serial] = best = seen
             if now - first >= INACTIVE_GRACE_SECONDS:
-                inferred = {
-                    STATE_FINISH: Outcome.COMPLETED,
-                    STATE_FAILED: Outcome.FAILED,
-                }.get(status.state, Outcome.ABORTED)
                 log.info(
-                    "%s has reported %s for %.0fs with no terminal event; closing the tile as %s",
-                    serial, status.state, now - first, inferred.value,
+                    "%s has been inactive for %.0fs (best state seen: %s); closing the tile",
+                    serial, now - first, best.value,
                 )
-                await self._go_terminal(session, inferred, now)
+                await self._go_terminal(session, best, now)
             return
 
         # Anything else, including transient firmware states like LOADING,
@@ -1240,6 +1257,7 @@ class Coordinator:
             self._verify_at.pop(session.activity_id, None)
         self._running_since.pop(session.serial, None)
         self._inactive_since.pop(session.serial, None)
+        self._inactive_outcome.pop(session.serial, None)
         self._retry_start_after.pop(session.serial, None)
 
     async def _end_tile(self, session: SessionState, now: float, keep_for: int) -> bool:

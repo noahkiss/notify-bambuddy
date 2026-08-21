@@ -953,3 +953,111 @@ def test_a_browser_subscription_still_hears_about_a_failure(clock):
     run(coord.tick())
     assert any(n["timeSensitive"] for n in notify.notifications), \
         "a failure must still break through Focus for a browser subscriber"
+
+
+# ---------------------------------------------------------------------------
+# The inferred outcome is the best state seen, not the last one
+# ---------------------------------------------------------------------------
+
+
+def test_a_finish_that_settles_to_idle_still_counts_as_a_success(clock):
+    """Regression, found by an adversarial audit rather than by any user.
+
+    A finished printer reports FINISH and then settles to IDLE, often inside
+    the ninety second grace window. The outcome used to be read from the frame
+    that CLOSED the window, so those prints ended as "Stopped". The one glimpse
+    of FINISH is the fact worth keeping; IDLE after it is just the printer
+    going back to sleep.
+    """
+    coord, _, _ = build(make_config(terminal_hold_s=1))
+    run(coord.handle(status(clock)))
+    clock.advance(30)
+    run(coord.handle(status(clock, state="FINISH")))
+    clock.advance(coordinator_module.INACTIVE_GRACE_SECONDS + 1)
+    run(coord.handle(status(clock, state="IDLE")))
+
+    assert coord._sessions[SERIAL].outcome is Outcome.COMPLETED
+
+
+def test_a_failure_that_settles_to_idle_still_counts_as_a_failure(clock):
+    """The same latch must not launder a FAILED into a mere "Stopped"."""
+    coord, _, _ = build(make_config(terminal_hold_s=1))
+    run(coord.handle(status(clock)))
+    clock.advance(30)
+    run(coord.handle(status(clock, state="FAILED")))
+    clock.advance(coordinator_module.INACTIVE_GRACE_SECONDS + 1)
+    run(coord.handle(status(clock, state="IDLE")))
+
+    assert coord._sessions[SERIAL].outcome is Outcome.FAILED
+
+
+def test_a_resume_clears_what_the_inactive_window_remembered(clock):
+    """A blip through FINISH followed by a real resume must leave nothing
+    behind: the NEXT print's inactive window starts from scratch, or a
+    cancelled second print would inherit the first one's success."""
+    coord, _, _ = build(make_config(terminal_hold_s=120))
+    run(coord.handle(status(clock)))
+    clock.advance(30)
+    run(coord.handle(status(clock, state="FINISH")))   # one glimpse
+    clock.advance(10)
+    run(coord.handle(status(clock, state="RUNNING", progress=60.0)))  # blip over
+
+    clock.advance(30)
+    run(coord.handle(status(clock, state="IDLE")))
+    clock.advance(coordinator_module.INACTIVE_GRACE_SECONDS + 1)
+    run(coord.handle(status(clock, state="IDLE")))
+
+    assert coord._sessions[SERIAL].outcome is Outcome.ABORTED, (
+        "a FINISH seen before the printer resumed leaked into the next window"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gaps the mutation audit found: behaviour that worked but only by accident
+# ---------------------------------------------------------------------------
+
+
+def test_a_capped_print_still_alerts_when_it_finishes(clock):
+    """A print queued behind the five-tile cap never gets a tile. Its push
+    notification is then the ONLY trace it ever existed, so gating the alert
+    on having had a tile would silently swallow it."""
+    config = make_config(max_tiles=1, terminal_hold_s=1)
+    coord, notify, _ = build(config, with_alerts=True)
+    run(coord.handle(status(clock)))                                   # takes the slot
+    run(coord.handle(status(clock, serial=SERIAL_B, printer_name="A1-2")))
+    assert len(notify.started) == 1, "the second printer should be queued, not started"
+
+    reach_terminal(coord, clock, state="FINISH",
+                   serial=SERIAL_B, printer_name="A1-2")
+    texts = [n["text"] for n in notify.notifications]
+    assert any("A1-2" in t for t in texts), (
+        f"the tileless print finished invisibly: {texts}"
+    )
+
+
+def test_a_dismissed_printer_is_not_restarted_by_the_next_status_frame(clock):
+    """Dismissal must hold against a fresh status frame re-entering.
+
+    Two checks stand in that path, one where the session would be created and
+    one where the tile would be started, and either alone is enough: this test
+    fails only when BOTH are gone. That redundancy is deliberate. Recreating a
+    tile someone just swiped away is the single most user-hostile thing this
+    service could do, so the property must survive any one guard being
+    refactored away.
+    """
+    coord, notify, store = build()
+    run(coord.handle(status(clock)))
+    assert len(notify.started) == 1
+
+    # The user swipes the tile away, recorded exactly as the 410 path does.
+    store.record_dismissal(SERIAL)
+    session = coord._sessions[SERIAL]
+    session.activity_id = None
+    coord._sessions.pop(SERIAL)
+
+    clock.advance(30)
+    run(coord.handle(status(clock, progress=50.0)))
+    clock.advance(coord._config.running_grace_s + 1)
+    run(coord.handle(status(clock, progress=51.0)))
+
+    assert len(notify.started) == 1, "a dismissed print's tile was recreated"
