@@ -1041,3 +1041,18 @@ def test_an_adopted_orphan_is_not_abandoned_on_the_first_tick(clock):
     assert notify.ended == [], "the adopted tile must not be abandoned immediately"
     assert reborn._sessions[SERIAL].phase is not Phase.TERMINAL, \
         "downtime is not silence: the liveness clock must be reset on adoption"
+
+
+def test_privacy_mode_keeps_the_job_name_out_of_the_start_log(clock, caplog):
+    """Privacy mode is about the model name not being visible, and a log file
+    is at least as likely to be shared as a Lock Screen photo. The start line
+    is the one log line that always carries the job name, so it is the one
+    that must run through the filter."""
+    import logging
+
+    coord, _, _ = build(make_config(privacy_mode=True))
+    with caplog.at_level(logging.INFO):
+        run(coord.handle(status(clock, subtask_name="Secret Prototype")))
+    joined = " ".join(r.getMessage() for r in caplog.records)
+    assert "Print started on" in joined, "the start line itself should still log"
+    assert "Secret Prototype" not in joined, "privacy mode leaked the job name to the log"

@@ -225,6 +225,9 @@ Print started on Workshop H2C: Articulated Dragon
 Started tile LA7Q2ZKM for bb1
 ```
 
+With `PRIVACY_MODE=1` the job name reads `(hidden)` there too: a log file is at
+least as likely to be shared as a Lock Screen photo.
+
 `bb1` is the session key. The REST API identifies printers by BambuBuddy's own
 database id rather than by serial, so it keys everything by
 `bb<id>`. To watch only some printers here, use **`BAMBUDDY_PRINTER_IDS=1,3`**,

@@ -523,9 +523,14 @@ class Coordinator:
             return
 
         session = self._open_session(serial, now, status=status)
+        # The line most people grep their logs for, so it is worded as the
+        # user experiences it. "Detected running" would be more literal, since
+        # nothing announces a start and this fires a grace window after the
+        # fact, but the distinction helps nobody reading a log.
         log.info(
-            "Detected a print already running on %s (%s); creating a tile",
-            session.printer_name or serial, status.state,
+            "Print started on %s: %s",
+            session.printer_name or serial,
+            self._loggable(session.job_name) or "unnamed job",
         )
         await self._start_tile(session, now)
 
