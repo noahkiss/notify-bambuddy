@@ -58,6 +58,13 @@ API_ROOT = "/api/v1/webhook"
 #: in a log line.
 SERIAL_PREFIX = "bb"
 
+#: How long after a printer was last seen active the fast poll cadence is
+#: kept. Sized to comfortably cover the coordinator's whole endgame: the 90
+#: second inactive window that accepts the outcome, plus the 2 minute hold
+#: before the tile is ended, plus slack. After this, a genuinely idle printer
+#: drops back to the slow cadence.
+ENDGAME_SECONDS = 300.0
+
 
 def synthetic_serial(printer_id: int) -> str:
     """The stable per-printer key used everywhere a serial would be.
@@ -264,12 +271,12 @@ class APISource:
         self._last_success_at: Optional[float] = None
         self._last_error: Optional[str] = None
 
-        #: Serials seen in an active state on the last poll, which is what
+        #: When each printer was last seen in an active state, which is what
         #: decides the poll interval. An instance attribute, not a class one:
-        #: a set defined in the class body is shared by every instance ever
-        #: created, which is invisible in production with a single source and
-        #: silently cross-contaminates every test in a suite.
-        self._active_printers: set = set()
+        #: a container defined in the class body is shared by every instance
+        #: ever created, which is invisible in production with a single source
+        #: and silently cross-contaminates every test in a suite.
+        self._active_since: dict = {}
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -341,7 +348,8 @@ class APISource:
 
     @property
     def _anything_active(self) -> bool:
-        return bool(self._active_printers)
+        cutoff = time.time() - ENDGAME_SECONDS
+        return any(seen > cutoff for seen in self._active_since.values())
 
     async def _poll_once(self) -> None:
         # Rediscover periodically so a printer added in BambuBuddy is picked
@@ -405,10 +413,18 @@ class APISource:
             log.warning("Event queue is full; dropped a status poll for %s", event.serial)
 
     def _track(self, event: PrinterStatus) -> None:
+        """Note when a printer was last seen doing something.
+
+        The fast cadence is kept for ENDGAME_SECONDS after a printer LEAVES an
+        active state, not dropped at that instant. The moment a print stops is
+        exactly when the coordinator starts timing things: a 90 second window
+        before the outcome is accepted, then a 2 minute hold before the tile
+        ends. Falling back to the idle cadence right then stretched a 90
+        second window to 160 seconds in practice, because the readings that
+        would close it only arrived every 80.
+        """
         if event.state in ("RUNNING", "PAUSE", "PREPARE"):
-            self._active_printers.add(event.serial)
-        else:
-            self._active_printers.discard(event.serial)
+            self._active_since[event.serial] = time.time()
 
     def _succeed(self) -> None:
         if self._consecutive_failures:
@@ -435,6 +451,7 @@ class APISource:
             "url": self._config.bambuddy_url,
             "printers_known": {str(pid): name for pid, name in sorted(self._printers.items())},
             "printers_polled": self._targets(),
+            "in_endgame": self._anything_active,
             "polls_succeeded": self._polls,
             "events_emitted": self._events,
             "consecutive_failures": self._consecutive_failures,

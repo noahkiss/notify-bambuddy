@@ -292,6 +292,30 @@ def test_polling_slows_right_down_when_every_printer_is_idle():
     assert source._interval() >= 30.0
 
 
+def test_the_endgame_keeps_the_fast_cadence(monkeypatch):
+    """Regression, from the first real print: the poller dropped to its idle
+    cadence the instant the printer left RUNNING, which is exactly when the
+    coordinator starts timing a 90 second window and a 2 minute hold. The 90
+    second window took 160 seconds to close, because the readings that would
+    close it only arrived every 80.
+
+    A printer stays on the fast cadence for ENDGAME_SECONDS after it was last
+    seen active, so the endgame is resolved at the printing cadence.
+    """
+    import notify_bambuddy.bambuddy_api as module
+
+    source, _ = _source(bambuddy_poll_seconds=10.0)
+    source._track(status_to_event(LIVE_RESPONSE))          # RUNNING
+    source._track(status_to_event(LIVE_IDLE))              # the print stops
+    assert source._interval() == 10.0, "the endgame fell back to the idle cadence"
+
+    # Once the endgame window has passed, idle means idle again.
+    real_time = module.time.time
+    monkeypatch.setattr(module.time, "time",
+                        lambda: real_time() + module.ENDGAME_SECONDS + 1)
+    assert source._interval() >= 30.0
+
+
 def test_polling_runs_at_the_configured_rate_while_something_prints():
     source, config = _source(bambuddy_poll_seconds=10.0)
     source._track(status_to_event(LIVE_RESPONSE))
@@ -347,17 +371,17 @@ def test_an_explicit_printer_list_wins_over_discovery():
     assert source._targets() == [3]
 
 
-def test_two_sources_do_not_share_their_active_printer_set():
-    """Regression: `_active_printers` was a class attribute.
+def test_two_sources_do_not_share_their_active_printer_state():
+    """Regression: the activity tracker was a class attribute.
 
-    A set defined in a class body is shared by every instance ever made. With
-    a single source in production it is invisible; in a test suite it silently
-    cross-contaminates every case.
+    A container defined in a class body is shared by every instance ever made.
+    With a single source in production it is invisible; in a test suite it
+    silently cross-contaminates every case.
     """
     first, _ = _source()
     second, _ = _source()
     first._track(status_to_event(LIVE_RESPONSE))
-    assert second._active_printers == set()
+    assert not second._active_since
 
 
 def test_the_snapshot_never_contains_the_api_key():

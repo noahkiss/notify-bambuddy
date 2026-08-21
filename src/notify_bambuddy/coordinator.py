@@ -774,8 +774,8 @@ class Coordinator:
         if first_terminal and not outcome.is_success:
             session.terminal_provisional = True
             log.info(
-                "%s reported %s while the printer still says RUNNING; treating that as "
-                "provisional until the printer agrees", session.serial, outcome.value,
+                "%s is closing as %s; held for %ds in case the printer comes back",
+                session.serial, outcome.value, self._config.terminal_hold_s,
             )
 
         if session.activity_id:
