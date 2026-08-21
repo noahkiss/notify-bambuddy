@@ -25,9 +25,19 @@
 
 name: Publish image
 
+# Tags ONLY, and deliberately.
+#
+# Publishing on both a branch push and a tag push fired two independent runs
+# for one release, and a multi-architecture build under emulation is not byte
+# reproducible, so `latest` and `0.2.0` ended up as different digests built
+# from the same commit. A version tag that does not name one exact artefact is
+# a weaker promise than it looks.
+#
+# One run per release now produces every tag at once, so `latest`, `0.2`,
+# `0.2.0` and the digest are all the same image. Every user-visible change
+# gets a version bump and a tag, so this loses no coverage.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -42,7 +52,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The tests run again here rather than trusting that CI already passed on
+  # this commit. Publishing is a separate workflow with its own trigger, so
+  # "CI was green" is an assumption about a different run; this makes it a
+  # precondition of the build that actually ships.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
   publish:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,8 +89,10 @@ jobs:
           # Lowercased by the action, which matters because a registry path
           # must be lowercase and GitHub usernames are not.
           images: ghcr.io/${{ github.repository }}
+          # `latest` moves on any release tag. All three are produced by this
+          # one run, so they name the same digest.
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 

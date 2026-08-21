@@ -23,7 +23,10 @@
 
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:latest
+    # Pinned to a release rather than tracking `latest`, so a pull can never
+    # change what is running mid-print. Every release is tagged; see the
+    # changelog before moving it.
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.2.1
     # Building from this checkout instead, when working on the code:
     # build: .
     container_name: notify-bambuddy

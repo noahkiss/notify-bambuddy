@@ -3,6 +3,19 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.2.1
+
+### Changed
+
+- **One build per release, gated on the tests.** Publishing fired on both a
+  branch push and a tag push, so one release was built twice and `latest` and
+  the version tag ended up as different digests of the same commit. A version
+  tag now names one exact artefact. The suite runs as a precondition of the
+  build that ships, rather than trusting that a separate workflow passed on
+  the same commit.
+- **The documented image is a pinned release** rather than `latest`, so a pull
+  cannot change what is running mid-print.
+
 ## 0.2.0
 
 Everything here came from the first real prints on real hardware. None of it
