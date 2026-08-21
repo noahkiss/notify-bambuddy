@@ -2,8 +2,7 @@
 # Configuration.
 #
 # Everything comes from environment variables, because that is what works
-# identically under Docker Compose, systemd `EnvironmentFile=`, and a plain
-# shell. Every secret-bearing variable also accepts a `_FILE` suffixed
+# identically in a Compose file, a `docker run`, and a plain shell. Every secret-bearing variable also accepts a `_FILE` suffixed
 # companion pointing at a file, which is how Docker and Kubernetes secrets are
 # mounted; the file form wins when both are set.
 #
@@ -220,10 +219,11 @@ def _default_state_db(env: dict) -> str:
     """Where the SQLite state lives when nobody said.
 
     NOT `/data`. The container image sets `STATE_DB=/data/notify-bambuddy.db`
-    explicitly and mounts a volume there, but a user following the documented
-    `pip install .` path is an ordinary account that cannot create `/data`, and
-    the service would die on its first run with a permission error before it
-    ever reached a log line.
+    explicitly and mounts a volume there, and that is the path that matters in
+    practice. But running it straight from a checkout, which is what anyone
+    working on the code does, is an ordinary account that cannot create
+    `/data`, and the service would die on its first run with a permission
+    error before it ever reached a log line.
 
     So the default follows the platform convention for per-user state, which
     is writable by definition: `$XDG_STATE_HOME` if set, else

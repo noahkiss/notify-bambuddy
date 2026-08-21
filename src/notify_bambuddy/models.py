@@ -89,9 +89,9 @@ STATE_UNKNOWN = "unknown"
 # paused print is an active print whose tile must stay on screen.
 ACTIVE_STATES = frozenset({STATE_RUNNING, STATE_PAUSE})
 
-# States that mean "no print is running right now". Used only as corroborating
-# evidence alongside an explicit terminal event, never on its own, because the
-# status topic can be stale for days.
+# States that mean "no print is running right now". A terminal outcome is
+# inferred from one of these persisting past INACTIVE_GRACE_SECONDS, which is
+# the only way this service ever learns a print ended.
 INACTIVE_STATES = frozenset({STATE_FINISH, STATE_FAILED, STATE_IDLE})
 
 
@@ -142,7 +142,6 @@ class Outcome(enum.Enum):
     #: The user stopped the print through BambuBuddy's own UI. A stop from the
     #: printer's touchscreen arrives as ABORTED instead, because BambuBuddy
     #: only knows about stops it issued itself.
-    CANCELLED = "cancelled"
     ABORTED = "aborted"
     #: Not a BambuBuddy outcome. Synthesised locally when a genuinely new print
     #: displaces a session this service still had open.
@@ -154,51 +153,23 @@ class Outcome(enum.Enum):
 
     @property
     def rank(self) -> int:
-        """Priority when two terminal events contradict each other.
+        """Priority when one outcome would replace another.
 
-        BambuBuddy can and does publish two terminal events for one print: its
-        restart reconciliation synthesises an "aborted" for any archive still
-        marked printing, and its own docstring says the real completion "if it
-        fires later, overwrites the status with the correct value"
-        (backend/app/main.py:4727-4731). So a later COMPLETED must be able to
-        overwrite an earlier ABORTED, which means outcomes need an ordering
-        rather than first-write-wins.
+        Higher wins. Success outranks everything, because a printer that
+        reported FINISH did finish, and a user whose Lock Screen said
+        "Cancelled" for a successful print has been actively misinformed.
 
-        Higher wins. Success outranks everything, because a print that
-        BambuBuddy eventually confirms finished did finish, and a user whose
-        Lock Screen said "Cancelled" for a successful print has been actively
-        misinformed.
+        This matters because outcomes here are INFERRED rather than announced,
+        so a first one can be wrong: a printer that drops off the network
+        looks like one that stopped, and the tile must be able to correct
+        itself when it comes back.
         """
         return {
             Outcome.SUPERSEDED: 0,
             Outcome.ABORTED: 1,
-            Outcome.CANCELLED: 2,
-            Outcome.FAILED: 3,
-            Outcome.COMPLETED: 4,
+            Outcome.FAILED: 2,
+            Outcome.COMPLETED: 3,
         }[self]
-
-
-def parse_outcome(status: Optional[str]) -> Outcome:
-    """Map BambuBuddy's terminal `status` string onto an Outcome.
-
-    Unknown strings become FAILED rather than raising. A terminal event with a
-    status this service does not recognise still means the print is over, and
-    guessing "failed" shows the user something truthful about the fact that it
-    did not report success.
-    """
-    if not status:
-        # `main.on_print_complete` defaults a missing status to "completed"
-        # before publishing, so an absent status here is unusual. Treat it as
-        # completed to match BambuBuddy's own default rather than inventing a
-        # failure.
-        return Outcome.COMPLETED
-    normalized = status.strip().lower()
-    for outcome in Outcome:
-        if outcome.value == normalized:
-            return outcome
-    return Outcome.FAILED
-
-
 # ---------------------------------------------------------------------------
 # Inbound events
 #

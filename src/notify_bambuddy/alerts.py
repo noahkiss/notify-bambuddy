@@ -42,14 +42,13 @@ log = logging.getLogger(__name__)
 #: should be able to produce a stream of notifications.
 COOLDOWN_SECONDS = 900.0
 
-#: Human wording for each outcome. `ABORTED` is deliberately vaguer than
-#: `CANCELLED`: BambuBuddy can only label a stop "cancelled" when it issued
-#: the stop itself, so a stop from the printer's own touchscreen arrives as
-#: "aborted" and claiming the user cancelled it would sometimes be wrong.
+#: Human wording for each outcome. `ABORTED` is deliberately vague: it covers
+#: every way a print can stop without reporting FINISH or FAILED, including a
+#: printer switched off at the wall, and claiming to know which would
+#: sometimes be wrong.
 _OUTCOME_TEXT = {
     Outcome.COMPLETED: ("Print finished", "finished"),
     Outcome.FAILED: ("Print failed", "failed"),
-    Outcome.CANCELLED: ("Print cancelled", "was cancelled"),
     Outcome.ABORTED: ("Print stopped", "stopped before finishing"),
     Outcome.SUPERSEDED: ("Print replaced", "was replaced by another job"),
 }

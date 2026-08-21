@@ -357,23 +357,22 @@ reporting as one.
 
 ## `Cannot create the state directory`
 
-The service is trying to write somewhere this account cannot. Running it
-natively it defaults to `~/.local/state/notify-bambuddy/state.db`, which needs
-no privileges; if you set `STATE_DB` yourself, point it somewhere writable:
+The container writes its database to `/data`, where the
+`notify-bambuddy-state` volume is mounted. This means the volume is missing, or
+`STATE_DB` was overridden to a path that is not writable inside the container.
 
-```bash
-STATE_DB=./notify-bambuddy.db notify-bambuddy
-```
+Check the volume is actually declared and mounted, and if you set `STATE_DB`
+yourself, that it points somewhere under `/data`.
 
-Do not use a path that disappears on reboot. Losing the database costs tile
-reattachment and dismissal memory after a restart.
+Do not point it at a path that disappears when the container is recreated.
+Losing the database costs tile reattachment and dismissal memory.
 
 ---
 
 ## Testing without a printer
 
 ```bash
-DRY_RUN=1 notify-bambuddy
+docker compose run --rm -e DRY_RUN=1 notify-bambuddy
 ```
 
 Tracks every printer and logs exactly what it would send, without creating,

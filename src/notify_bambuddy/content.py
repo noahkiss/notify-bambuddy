@@ -128,7 +128,6 @@ def status_word(session: SessionState) -> str:
         return {
             Outcome.COMPLETED: "Done",
             Outcome.FAILED: "Failed",
-            Outcome.CANCELLED: "Cancelled",
             Outcome.ABORTED: "Stopped",
             Outcome.SUPERSEDED: "Replaced",
         }[session.outcome]

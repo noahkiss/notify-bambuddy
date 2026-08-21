@@ -321,11 +321,12 @@ def test_a_failed_print_keeps_the_progress_it_actually_reached():
     assert content["status"] == "Failed"
 
 
-def test_a_touchscreen_stop_is_worded_more_cautiously_than_a_cancel():
-    """BambuBuddy can only say "cancelled" for stops it issued itself."""
-    assert status_word(make_session(phase=Phase.TERMINAL, outcome=Outcome.CANCELLED)) == \
-        "Cancelled"
+def test_a_stop_is_worded_without_claiming_to_know_why():
+    """Every way a print can end other than FINISH or FAILED arrives as the
+    same thing: it stopped. Saying "Cancelled" would assert a cause nothing
+    reported."""
     assert status_word(make_session(phase=Phase.TERMINAL, outcome=Outcome.ABORTED)) == "Stopped"
+    assert status_word(make_session(phase=Phase.TERMINAL, outcome=Outcome.FAILED)) == "Failed"
 
 
 # ---------------------------------------------------------------------------

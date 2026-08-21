@@ -653,12 +653,11 @@ class Coordinator:
             return
 
         if status.state in INACTIVE_STATES:
-            # NOT a terminal decision on its own. The status topic is stale
-            # for days after a printer powers off, and BambuBuddy's own
-            # terminal events are the authoritative signal. But if the printer
-            # sits inactive for a while and no terminal event ever arrives,
-            # something dropped one, and holding a tile open forever is worse
-            # than closing it on inference.
+            # NOT terminal on its own. A single inactive reading between two
+            # running ones is a blip, and ending a tile is irreversible. But a
+            # printer that keeps saying it for a while has stopped, and this
+            # is the only way that is ever learned: nothing announces the end
+            # of a print.
             first = self._inactive_since.setdefault(serial, now)
             if now - first >= INACTIVE_GRACE_SECONDS:
                 inferred = {

@@ -30,15 +30,15 @@ to configure inside BambuBuddy beyond issuing the key.
 - **One tile per printer.** Several printers run side by side without
   overwriting each other.
 - **A live countdown**, from the printer's own ETA, converted to the units
-  Notify expects. (BambuBuddy reports `remaining_time` in MINUTES, on both the
-  BambuBuddy's own API. Its wiki example makes them look like seconds.
-  This is the single most common way to get this integration wrong, and it is
-  the difference between a two hour countdown and a two minute one.)
-- **Pause, resume, and filament runout**, told apart and labelled.
-- **Completion, failure and cancellation**, ending the tile with the right
-  outcome.
+  Notify expects. (BambuBuddy reports `remaining_time` in MINUTES. Its own
+  documentation makes them look like seconds. This is the single most common
+  way to get this integration wrong, and it is the difference between a two
+  hour countdown and a two minute one.)
+- **Pause and resume**, labelled. A pause is shown as "Paused" with no stated
+  cause, because BambuBuddy's status route reports no error codes.
+- **Completion and failure**, ending the tile with the right outcome.
 - **Push notifications for the moments that matter**, alongside the tiles:
-  print finished, print failed, filament ran out, printer stopped responding.
+  print finished, print failed, printer stopped responding.
   Problem alerts can break through Do Not Disturb.
 - **Survives restarts.** Yours and BambuBuddy's. It reattaches
   to tiles that are still on screen instead of orphaning them or creating
@@ -226,7 +226,7 @@ Started tile LA7Q2ZKM for bb1
 ```
 
 `bb1` is the session key. The REST API identifies printers by BambuBuddy's own
-database id rather than by serial, so this source keys everything by
+database id rather than by serial, so it keys everything by
 `bb<id>`. To watch only some printers here, use **`BAMBUDDY_PRINTER_IDS=1,3`**,
 which takes plain ids and is checked before a request is even made.
 `PRINTER_ALLOWLIST` still works but matches the session key, so it wants
@@ -235,7 +235,7 @@ which takes plain ids and is checked before a request is even made.
 To try everything except the pushing:
 
 ```bash
-DRY_RUN=1 notify-bambuddy
+docker compose run --rm -e DRY_RUN=1 notify-bambuddy
 ```
 
 That tracks every printer and logs exactly what it would send, without
@@ -318,10 +318,13 @@ So the moments that matter get an ordinary push notification as well:
 
 | Alert | `problems` | `all` | Time Sensitive |
 |---|:---:|:---:|:---:|
+| Print started | | ✓ | |
 | Print finished | | ✓ | |
-| Print failed, stopped or cancelled | ✓ | ✓ | ✓ |
-| Filament ran out | ✓ | ✓ | ✓ |
+| Print failed or stopped | ✓ | ✓ | ✓ |
 | Printer stopped responding | ✓ | ✓ | |
+
+"Print started" is sent only to a browser subscription, where there is no tile
+to announce it.
 
 Time Sensitive alerts break through Do Not Disturb and Focus. A successful
 print never is: nobody needs to be woken at 3am by good news. Set
@@ -335,17 +338,18 @@ instead of scattering down the list.
 **Set `ALERTS=off`.** BambuBuddy ships a generic `webhook` notification
 provider, and pointing it at a Notify device URL already delivers print
 finished, print failed, printer offline and filament low, with its own quiet
-hours and per-printer routing. If you have that set up, leaving alerts on here
-means every event arrives twice.
+hours and per-printer routing. It also covers things this add-on cannot see at
+all, filament runout among them. If you have that set up, leaving alerts on
+here means the events they share arrive twice.
 
 That is worth being plain about: **the tile is what this add-on is actually
 for.** Ordinary notifications are a solved problem in BambuBuddy already (it
 has built-in providers for ntfy, Pushover, Telegram, Discord, Bark, Home
 Assistant and a generic webhook). What none of them can do is a Lock Screen
-tile that updates in place with a live countdown, because that needs retained
-per-second state rather than milestone events. Alerts are included here only so
-that a finished print leaves something behind after its tile disappears, and
-they are one setting away from being off.
+tile that updates in place with a live countdown, because that needs a
+continuous view of the print rather than a handful of milestone events. Alerts
+are included here only so that a finished print leaves something behind after
+its tile disappears, and they are one setting away from being off.
 
 ---
 
@@ -389,7 +393,7 @@ Independently of that setting:
 curl -s localhost:9337/status
 ```
 
-On the default source, `source.last_error` and `source.seconds_since_success`
+`source.last_error` and `source.seconds_since_success`
 say whether BambuBuddy is answering. A rejected API key is fatal at startup and
 says so; an unreachable BambuBuddy is retried with backoff, so
 `consecutive_failures` climbing while `polls_succeeded` stays put means the URL
@@ -428,7 +432,7 @@ More in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## How it talks to BambuBuddy
 
-**On the default source**, two endpoints, both `GET`, both requiring only the
+Two endpoints, both `GET`, both requiring only the
 `read_status` permission:
 
 | Request | Why |
