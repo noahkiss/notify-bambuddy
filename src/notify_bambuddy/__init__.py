@@ -38,7 +38,17 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+import os
+
+__version__ = "0.2.0"
+
+#: The commit this build came from, stamped into the image at build time.
+#: "unknown" when running from a checkout rather than a published image.
+#:
+#: This exists because a rolling `latest` tag makes "which version am I
+#: running" unanswerable from the version number alone: two images months
+#: apart can both say 0.2.0. The commit cannot be ambiguous.
+BUILD = os.environ.get("NOTIFY_BAMBUDDY_BUILD", "unknown")
 
 # The user agent sent on every Notify API call. Having the version in here
 # means a gateway operator looking at logs can tell which release is

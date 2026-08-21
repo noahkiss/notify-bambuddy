@@ -3,6 +3,43 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.2.0
+
+Everything here came from the first real prints on real hardware. None of it
+could be reached by any test environment, because every one of these bugs
+needed a printer that actually starts, stops and takes its time about it.
+
+### Fixed
+
+- **A finished print could leave a second tile on the phone.** The gateway
+  reaps a tile it believes never reached the device, and that fell into the
+  generic "recreate it, the print is still running" branch. But a tile iOS
+  displays while the Notify app stays closed is never reported back, so it
+  looks identical to one that never arrived. The replacement then sat
+  alongside the original. That reap is now the one case never retried.
+- **An adopted print showed an empty progress bar.** Progress is pinned to 0
+  until a reading is seen to move, because BambuBuddy does not reset the field
+  when a print starts. On this transport nothing announces a start, so every
+  tile was treated as a fresh print and every print already under way showed
+  nothing until the percentage happened to tick. A print this service watched
+  BEGIN keeps the pin; one already running when it first looked does not.
+- **The endgame ran at the idle poll cadence.** Readings dropped to one every
+  80 seconds exactly when the coordinator starts timing a 90 second window,
+  so a print took 160 seconds to be recognised as over. The fast cadence now
+  holds for five minutes after a printer was last active.
+- **A log line claimed the printer said RUNNING regardless of what it said.**
+
+### Changed
+
+- **The unconfirmed-start backoff is capped at 15, 15 then 30 minutes**, down
+  from 15, 60 then 180. The signal it acts on cannot distinguish a discarded
+  start from a displayed tile whose app never checked in, and three hours of
+  no tiles on a working phone is too high a price for a guess.
+- **The startup line now carries the build**: `notify-bambuddy 0.2.0 (build
+  <commit>) is running`. A rolling `latest` tag makes a version number
+  ambiguous, since two images months apart can report the same one. The
+  commit cannot be.
+
 ## 0.1.0
 
 First release. A proof of concept that is nonetheless meant to survive being

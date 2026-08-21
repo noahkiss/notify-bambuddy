@@ -29,7 +29,7 @@ import signal
 import sys
 from typing import Any, Optional
 
-from . import __version__
+from . import BUILD, __version__
 from .alerts import Alerts
 from .bambuddy_api import APISource, BambuBuddyAuthError, BambuBuddyError
 from .config import Config, ConfigError, NOTIFY_BASE_URL, load_config
@@ -204,7 +204,7 @@ async def run(config: Config) -> int:
             # still works.
             pass
 
-    log.info("notify-bambuddy %s is running", __version__)
+    log.info("notify-bambuddy %s (build %s) is running", __version__, BUILD)
 
     prune_counter = 0
     try:

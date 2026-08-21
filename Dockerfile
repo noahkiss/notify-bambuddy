@@ -60,6 +60,12 @@ ENV HEALTH_PORT=9337
 
 # Unbuffered, so logs appear in `docker logs` as they happen rather than in
 # 4 KB bursts.
+# The commit this image was built from, logged at startup. Without it, a
+# rolling `latest` makes "which build am I running" unanswerable: two images
+# months apart both report the same version number.
+ARG BUILD_SHA=unknown
+ENV NOTIFY_BAMBUDDY_BUILD=$BUILD_SHA
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
