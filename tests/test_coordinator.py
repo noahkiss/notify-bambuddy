@@ -796,3 +796,93 @@ def test_a_countdown_appearing_bypasses_the_progress_pacing_floor(clock):
     run(coord.handle(status(clock, remaining_minutes=90, layer_num=12)))
     assert notify.updates, "the countdown appearing is news, not a progress tick"
     assert notify.updates[-1][1]["endsIn"] == 5400
+
+
+# ---------------------------------------------------------------------------
+# Terminal alerts and revocable outcomes
+#
+# Both of these were broken silently when the event sources were removed, and
+# a fully green suite said nothing, so each one names the exact mechanism.
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_print_sends_a_push_notification(clock):
+    """Regression: no failure notification fired at all.
+
+    The deferred alert for a non-success outcome is gated on
+    `not session.outcome_inferred`, which used to mean "no terminal event
+    arrived, so this outcome is a guess". Once outcomes were only ever derived
+    from the printer's own state, the inactive-state path set that flag too,
+    and the gate shut on every failure. A green suite, a correct tile, and no
+    notification anyone would ever receive.
+    """
+    coord, notify, _ = build(make_config(terminal_hold_s=120), with_alerts=True)
+    run(coord.handle(status(clock)))
+    reach_terminal(coord, clock, state="FAILED")
+
+    clock.advance(121)
+    run(coord.tick())
+
+    assert notify.notifications, "a failed print sent no notification"
+    alert = notify.notifications[-1]
+    assert alert["timeSensitive"] is True, "a failure must break through Focus"
+
+
+def test_an_abandoned_printer_does_not_also_claim_the_print_stopped(clock):
+    """The other half of the same gate, and the reason it exists.
+
+    A printer switched off at the wall is given up on after ABANDON_AFTER. That
+    outcome IS a guess: nothing was observed. The "not responding" alert has
+    already said everything that is actually known, so a second notification
+    asserting the print stopped would be inventing detail.
+    """
+    coord, notify, _ = build(
+        make_config(silence_after_s=90, abandon_after_s=300, terminal_hold_s=1),
+        with_alerts=True,
+    )
+    run(coord.handle(status(clock)))
+
+    clock.advance(400)
+    run(coord.tick())
+    clock.advance(10)
+    run(coord.tick())
+
+    texts = [n["text"] for n in notify.notifications]
+    assert not any("stopped" in t.lower() or "cancelled" in t.lower() for t in texts), (
+        f"an assumed outcome was announced as fact: {texts}"
+    )
+
+
+def test_a_printer_that_comes_back_takes_its_failure_back(clock):
+    """Regression: the revocation path was unreachable.
+
+    A non-success outcome is provisional, because a printer that drops off the
+    network mid-print is indistinguishable from one that stopped. The flag that
+    marks it revocable additionally required the newest reading to say RUNNING,
+    which cannot hold: a terminal is only ever reached BECAUSE the printer
+    stopped saying RUNNING. So the flag was never set and a blip ended the tile
+    for good.
+    """
+    coord, notify, _ = build(make_config(terminal_hold_s=120))
+    run(coord.handle(status(clock)))
+    reach_terminal(coord, clock, state="FAILED")
+
+    session = coord._sessions[SERIAL]
+    assert session.terminal_provisional, "a failure was treated as certain"
+
+    # The printer comes back mid-hold, which is the whole point.
+    clock.advance(10)
+    run(coord.handle(status(clock, state="RUNNING", progress=60.0)))
+
+    assert not coord._sessions[SERIAL].terminal_provisional
+    assert coord._sessions[SERIAL].phase is Phase.PRINTING
+    assert not notify.ended, "the tile was ended despite the printer resuming"
+
+
+def test_a_success_is_never_provisional(clock):
+    """A printer that reported FINISH finished. Holding that open would delay
+    every successful tile for no reason."""
+    coord, _, _ = build(make_config(terminal_hold_s=120))
+    run(coord.handle(status(clock)))
+    reach_terminal(coord, clock, state="FINISH")
+    assert not coord._sessions[SERIAL].terminal_provisional

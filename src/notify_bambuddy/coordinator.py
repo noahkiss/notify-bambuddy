@@ -669,7 +669,6 @@ class Coordinator:
                     "%s has reported %s for %.0fs with no terminal event; closing the tile as %s",
                     serial, status.state, now - first, inferred.value,
                 )
-                session.outcome_inferred = True
                 await self._go_terminal(session, inferred, now)
             return
 
@@ -733,18 +732,25 @@ class Coordinator:
         # arrive. A SUCCESS is never extended: it already outranks everything,
         # so nothing that arrives later could improve it, and doubling the
         # hold would just leave every finished tile on screen twice as long.
-        # A FAILURE reported while the printer is STILL saying RUNNING is the
-        # signature of BambuBuddy's restart reconciliation, which synthesises
-        # an "aborted" for any print its archive still lists as running. The
-        # print is very probably still going. Marking the session provisional
-        # rather than simply extending the hold is what lets a later RUNNING
-        # frame take it back: `_on_status` revokes a provisional terminal, and
-        # `_expire_terminal_holds` refuses to end one while the printer is
-        # still talking.
-        latest = self._latest_status.get(session.serial)
-        if first_terminal and not outcome.is_success and latest is not None and \
-                latest.state == STATE_RUNNING and \
-                now - latest.timestamp.timestamp() < self._config.silence_after_s:
+        # Every non-success outcome here is REVOCABLE, and saying so is the
+        # whole reason this flag exists.
+        #
+        # A success is certain: a printer that reported FINISH finished. A
+        # failure or an abort is not, because both are read from the printer
+        # going inactive or going quiet, and a printer that drops off the
+        # network mid-print looks exactly like one that stopped. Marking the
+        # session provisional rather than simply extending the hold is what
+        # lets a later RUNNING reading take it back: `_on_status` revokes a
+        # provisional terminal, and `_expire_terminal_holds` refuses to end
+        # one while the printer is still talking.
+        #
+        # This condition used to also require the newest reading to say
+        # RUNNING, which made sense when a terminal could arrive as an event
+        # contradicting live telemetry. It cannot now: a terminal is only ever
+        # reached BECAUSE the printer stopped saying RUNNING, so that clause
+        # made the flag unsettable and quietly disabled every revocation path
+        # behind it.
+        if first_terminal and not outcome.is_success:
             session.terminal_provisional = True
             log.info(
                 "%s reported %s while the printer still says RUNNING; treating that as "
@@ -1261,10 +1267,14 @@ class Coordinator:
                          session.outcome.value if session.outcome else "no outcome")
 
         # The deferred alert for a non-success outcome goes out now that the
-        # hold has expired and nothing can overrule it. An INFERRED outcome
-        # (a silent printer given up on, a FINISH with no event) is not worth
-        # a "Print stopped" notification: it would be a guess, and for the
-        # silent case the "not responding" alert already said what is known.
+        # hold has expired and nothing can overrule it.
+        #
+        # `outcome_inferred` means "nothing was observed; this outcome was
+        # assumed because the printer vanished". That is the abandon path, and
+        # it must NOT produce a "Print stopped" notification: it would be a
+        # guess, and the "not responding" alert has already said everything
+        # that is actually known. An outcome read from a state the printer
+        # genuinely reported is not that, and does alert.
         if session.outcome is not None and not session.alert_sent and \
                 not session.outcome_inferred:
             session.alert_sent = True
