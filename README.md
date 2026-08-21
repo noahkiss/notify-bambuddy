@@ -94,6 +94,12 @@ this service looks.
   **Device ID** and **Token** from **Settings → Device**. Open the app once
   after installing it: that first launch is what lets a tile appear while the
   app is closed.
+
+  A **browser subscription works too**, with the device id that starts `WB`.
+  A Live Activity is an iOS Lock Screen feature, so there is no tile in that
+  case, but every print is still followed and you still get a notification
+  when one starts, finishes or fails. Nothing to configure: the service works
+  out which it is from the id.
 - **Docker**, wherever BambuBuddy already runs.
 
 The device token is a credential. Treat it like a password.

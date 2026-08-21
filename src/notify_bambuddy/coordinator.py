@@ -793,7 +793,27 @@ class Coordinator:
     # ------------------------------------------------------------------
 
     async def _start_tile(self, session: SessionState, now: float) -> None:
-        """Create the Live Activity for a session, or queue it for a slot."""
+        """Announce a new print, by whatever means the destination supports.
+
+        Usually that is creating the Live Activity, or queueing for a slot
+        when all five are taken. For a browser subscription there is no tile
+        to create, so the announcement is an ordinary notification instead and
+        the session goes on being tracked exactly as it would otherwise: it
+        still advances, still reaches a terminal outcome, and still produces
+        the alert that says how the print ended.
+        """
+        if not self._config.tiles_enabled:
+            # No tile is possible, and that is not a failure to report on
+            # every print. Everything downstream already copes with a session
+            # whose `activity_id` is None, because a print queued behind the
+            # tile cap looks the same.
+            if self._alerts is not None:
+                await self._alerts.print_started(
+                    session.serial, session.printer_name, session.job_name,
+                    session.eta_seconds, dedupe_key=session.session_key,
+                )
+            return
+
         if self._store.is_dismissed(session.serial):
             log.debug("Not starting a tile for %s: the last one was dismissed and no new "
                       "print has started since", session.serial)

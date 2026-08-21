@@ -102,6 +102,7 @@ async def validate_credentials(client: NotifyClient) -> None:
     )
 
 
+
 async def run(config: Config) -> int:
     loop = asyncio.get_running_loop()
     queue: "asyncio.Queue[Any]" = asyncio.Queue(maxsize=QUEUE_SIZE)
@@ -130,6 +131,15 @@ async def run(config: Config) -> int:
             store.close()
             return 2
         log.warning("Could not reach Notify to validate credentials (%s); continuing", exc)
+
+    if not config.tiles_enabled:
+        # Said once, plainly, because otherwise the first question is "why is
+        # there no tile" and the answer is not discoverable from anywhere.
+        log.info(
+            "That device is a browser subscription, so there will be no Lock Screen tiles: "
+            "a Live Activity is an iOS feature. Every print is still followed, and you still "
+            "get a notification when one starts, finishes or fails."
+        )
 
     alerts = Alerts(config, client) if config.alerts != "off" else None
     coordinator = Coordinator(config, store, client, alerts=alerts)

@@ -16,6 +16,11 @@ left running for a month.
   down locally, a whole print costs a handful of pushes rather than one every
   few minutes, no matter how often this service looks.
 - **Pause and resume**, told apart and labelled.
+- **Browser subscriptions are supported**, not just iPhones and iPads. A
+  Live Activity is an iOS Lock Screen feature, so a `WB` device id gets no
+  tile; it gets a notification when a print starts, finishes or fails
+  instead, and every print is followed exactly the same way. Worked out from
+  the shape of the device id, with nothing to configure.
 - **Push notifications for the moments a tile cannot cover**: print finished,
   print failed, printer stopped responding. Problem alerts are sent Time
   Sensitive so they break through Do Not Disturb; successful completions never

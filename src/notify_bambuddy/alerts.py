@@ -93,6 +93,37 @@ class Alerts:
 
     # --- Alerts ------------------------------------------------------------
 
+    async def print_started(self, serial: str, printer_name: Optional[str],
+                            job_name: Optional[str], eta_seconds: Optional[int],
+                            dedupe_key: Optional[str] = None) -> None:
+        """A print began.
+
+        Sent ONLY when this service cannot put a tile on the screen, which
+        today means the destination is a browser rather than an iPhone. With a
+        tile there is nothing to announce: the tile appearing IS the
+        announcement, and a push saying the same thing would be noise on top
+        of it.
+
+        Without one, this is the only confirmation the user gets that the
+        service is watching at all, and the difference between "it works" and
+        "I think it is broken" is exactly this notification.
+
+        Not a problem, so it follows ALERTS=all and is never Time Sensitive.
+        """
+        if not self._wants(problem=False):
+            return
+        printer = printer_name or serial
+        if job_name and not self._config.privacy_mode:
+            text = f"{job_name} started on {printer}."
+        else:
+            text = f"A print started on {printer}."
+        if eta_seconds and eta_seconds > 0:
+            hours, minutes = divmod(round(eta_seconds / 60), 60)
+            text += f" About {hours}h {minutes:02d}m to go." if hours else \
+                f" About {minutes}m to go."
+        await self._send(serial, "started", "Print started", text,
+                         time_sensitive=False, dedupe_key=dedupe_key)
+
     async def print_finished(self, serial: str, printer_name: Optional[str],
                              job_name: Optional[str], outcome: Outcome,
                              dedupe_key: Optional[str] = None) -> None:

@@ -195,13 +195,21 @@ def _csv(name: str, env: dict) -> tuple[str, ...]:
 # Validation
 # ---------------------------------------------------------------------------
 
-#: Notify device ids come in two shapes: the legacy 8-character form used by
-#: iOS devices, and a 16-character `WB`-prefixed form used by web-push
-#: browsers. Only the first can host a Live Activity at all (the gateway
-#: rejects web-push and macOS poll-only devices with a 400), so the shape
-#: check here is a friendlier version of an error the user would otherwise
-#: only discover on their first real print.
-_DEVICE_ID_RE = re.compile(r"^[A-Z0-9]{8}$")
+#: Notify device ids come in two shapes, and which one you have decides what
+#: this service can actually do:
+#:
+#:   8 characters          an iOS device. Can host a Live Activity.
+#:   `WB` plus 14 more     a browser registered through the Notify web app.
+#:                         Ordinary notifications work unchanged; a Live
+#:                         Activity is an iOS Lock Screen feature and starting
+#:                         one on a browser returns an honest 400.
+#:
+#: Both are accepted. A browser id puts the service into notifications-only
+#: mode rather than being refused, because "your print finished" is most of
+#: the value and there is no reason to withhold it from someone who reads
+#: their notifications in a browser.
+_IOS_DEVICE_ID_RE = re.compile(r"^[A-Z0-9]{8}$")
+_WEB_DEVICE_ID_RE = re.compile(r"^WB[A-Za-z0-9]{14}$")
 
 #: `#RRGGBB` or `#AARRGGBB`, with the leading `#` optional. The 8-digit form
 #: puts ALPHA FIRST, which is the opposite of the CSS convention and worth
@@ -248,6 +256,12 @@ class Config:
     # --- Notify destination ------------------------------------------------
     device_id: str
     device_token: str
+    #: False for a browser subscription, which cannot host a Live Activity.
+    #: The service then runs notifications-only: it still follows every print
+    #: and still says when one finishes or fails, it just never puts a tile on
+    #: a Lock Screen. Derived from the shape of the device id, not configured
+    #: separately, because there is nothing for a user to decide here.
+    tiles_enabled: bool
 
     # --- Presentation ------------------------------------------------------
     symbol: str
@@ -384,11 +398,16 @@ def load_config(env: Optional[dict] = None) -> Config:
             "on one specific iPhone or iPad, so it needs that device's own id and token from "
             "Settings -> Device in the Notify app."
         )
-    if not _DEVICE_ID_RE.match(device_id):
+    if _IOS_DEVICE_ID_RE.match(device_id):
+        tiles_enabled = True
+    elif _WEB_DEVICE_ID_RE.match(device_id):
+        # A browser. Everything except the tile still works.
+        tiles_enabled = False
+    else:
         raise ConfigError(
-            f"NOTIFY_DEVICE_ID {device_id!r} is not an iOS device id. Expected 8 characters, "
-            "A-Z and 0-9. A 16-character id starting with 'WB' is a web-push browser, which "
-            "cannot host a Live Activity."
+            f"NOTIFY_DEVICE_ID {device_id!r} is not a Notify device id. Expected either 8 "
+            "characters (an iOS device, from Settings -> Device in the app) or 'WB' followed "
+            "by 14 more (a browser registered through the Notify web app)."
         )
 
     # --- Presentation ------------------------------------------------------
@@ -432,6 +451,14 @@ def load_config(env: Optional[dict] = None) -> Config:
             "it is given up on."
         )
 
+    if not tiles_enabled and alerts == "off":
+        raise ConfigError(
+            f"NOTIFY_DEVICE_ID {device_id!r} is a browser subscription, which cannot host a "
+            "Live Activity, and ALERTS is off. That combination leaves this service with "
+            "nothing at all it is allowed to send. Set ALERTS to 'all' or 'problems', or "
+            "use the device id of an iPhone or iPad from Settings -> Device in the app."
+        )
+
     log_level = (_str("LOG_LEVEL", env, "INFO") or "INFO").upper()
     if log_level not in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"):
         raise ConfigError(
@@ -448,6 +475,7 @@ def load_config(env: Optional[dict] = None) -> Config:
         bambuddy_printer_ids=bambuddy_printer_ids,
         device_id=device_id,
         device_token=device_token,
+        tiles_enabled=tiles_enabled,
         symbol=symbol,
         tint=tint,
         keep_for=keep_for,

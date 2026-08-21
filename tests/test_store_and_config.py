@@ -109,9 +109,33 @@ def test_a_group_id_is_rejected_before_it_can_fail_silently():
     assert "group" in str(caught.value).lower()
 
 
-def test_a_web_push_device_id_is_rejected():
+def test_a_web_push_device_id_turns_off_tiles_instead_of_being_rejected():
+    """A browser cannot host a Live Activity, but it can be notified.
+
+    Refusing to start would withhold "your print finished" from someone whose
+    only sin is reading their notifications in a browser, which is most of the
+    value of this service.
+    """
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="WB12345678901234"))
+    assert config.tiles_enabled is False
+
+
+def test_an_ios_device_id_keeps_tiles_on():
+    assert load_config(MINIMAL_ENV).tiles_enabled is True
+
+
+def test_a_browser_with_alerts_off_is_rejected():
+    """That combination leaves nothing this service is allowed to send, and
+    failing at startup is far kinder than running silently forever."""
+    with pytest.raises(ConfigError) as caught:
+        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="WB12345678901234", ALERTS="off"))
+    assert "ALERTS" in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ["WB123", "WB123456789012345", "ABCD123", "abcd1234"])
+def test_a_device_id_of_the_wrong_shape_is_still_rejected(bad):
     with pytest.raises(ConfigError):
-        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="WB12345678901234"))
+        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID=bad))
 def test_a_tint_accepts_both_hex_forms_and_normalises_them():
     assert load_config(dict(MINIMAL_ENV, NOTIFY_TINT="7C3AED")).tint == "#7C3AED"
     assert load_config(dict(MINIMAL_ENV, NOTIFY_TINT="#7C3AED")).tint == "#7C3AED"

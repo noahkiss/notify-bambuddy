@@ -886,3 +886,70 @@ def test_a_success_is_never_provisional(clock):
     run(coord.handle(status(clock)))
     reach_terminal(coord, clock, state="FINISH")
     assert not coord._sessions[SERIAL].terminal_provisional
+
+
+# ---------------------------------------------------------------------------
+# Notifications-only mode, for a browser subscription
+# ---------------------------------------------------------------------------
+
+
+def _web_only(**overrides):
+    """A config whose destination is a browser, so no tile is possible."""
+    return make_config(tiles_enabled=False, device_id="WB12345678901234", **overrides)
+
+
+def test_a_browser_subscription_never_creates_a_tile(clock):
+    """Starting a Live Activity on a browser returns a 400 from the gateway.
+
+    Attempting it anyway would burn a request per print and put an error in
+    the log for a situation that is not an error at all.
+    """
+    coord, notify, _ = build(_web_only(), with_alerts=True)
+    run(coord.handle(status(clock)))
+    assert not notify.started, "a tile was attempted for a browser subscription"
+
+
+def test_a_browser_subscription_is_told_the_print_started(clock):
+    """With no tile, this is the only sign the service is working at all."""
+    coord, notify, _ = build(_web_only(), with_alerts=True)
+    run(coord.handle(status(clock)))
+    assert notify.notifications, "a browser subscriber was told nothing"
+    alert = notify.notifications[0]
+    assert alert["title"] == "Print started"
+    assert alert["timeSensitive"] is False, "a print starting is not urgent"
+
+
+def test_an_ios_device_is_not_told_the_print_started(clock):
+    """The tile appearing IS the announcement. A push saying the same thing
+    would be noise stacked on top of it, and the whole point of the tile is to
+    replace that stack."""
+    coord, notify, _ = build(with_alerts=True)
+    run(coord.handle(status(clock)))
+    assert notify.started, "the tile should have been created"
+    assert not notify.notifications, "an iOS device got a redundant start push"
+
+
+def test_a_browser_subscription_still_hears_how_the_print_ended(clock):
+    """The session has to keep being tracked all the way to a terminal
+    outcome, even though nothing is on screen. This is the whole feature: no
+    tile, but you still find out."""
+    coord, notify, _ = build(_web_only(terminal_hold_s=1), with_alerts=True)
+    run(coord.handle(status(clock)))
+    reach_terminal(coord, clock, state="FINISH")
+    clock.advance(5)
+    run(coord.tick())
+
+    titles = [n["title"] for n in notify.notifications]
+    assert "Print started" in titles
+    assert any("finish" in t.lower() or "done" in t.lower() or "complete" in t.lower()
+               for t in titles), f"no completion notification: {titles}"
+
+
+def test_a_browser_subscription_still_hears_about_a_failure(clock):
+    coord, notify, _ = build(_web_only(terminal_hold_s=1), with_alerts=True)
+    run(coord.handle(status(clock)))
+    reach_terminal(coord, clock, state="FAILED")
+    clock.advance(5)
+    run(coord.tick())
+    assert any(n["timeSensitive"] for n in notify.notifications), \
+        "a failure must still break through Focus for a browser subscriber"

@@ -20,7 +20,7 @@ NOTIFY_DEVICE_TOKEN_FILE=/run/secrets/notify_token
 |---|---|
 | `BAMBUDDY_URL` | BambuBuddy's base address, exactly as you browse to it, with no path or query. For example `http://192.168.1.50:8000`, or `http://bambuddy:8000` for a Compose service name. |
 | `BAMBUDDY_API_KEY` | An API key from BambuBuddy, **Settings → API Keys**, carrying the `read_status` permission. **A credential.** Also accepts `BAMBUDDY_API_KEY_FILE`. |
-| `NOTIFY_DEVICE_ID` | From Notify → Settings → Device. Eight characters, A-Z and 0-9. |
+| `NOTIFY_DEVICE_ID` | From Notify → Settings → Device. Eight characters for an iPhone or iPad, or `WB` plus 14 more for a browser subscription. A browser cannot host a Live Activity, so that id puts the service into notifications-only mode: no tile, but every print is still followed and still announced. It is worked out from the id, with nothing to set. |
 | `NOTIFY_DEVICE_TOKEN` | From the same screen. **A credential.** |
 
 The API key travels in an `X-API-Key` header, never in a URL, and is redacted

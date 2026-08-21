@@ -55,6 +55,9 @@ def make_config(**overrides: Any) -> Config:
         bambuddy_timeout=10.0,
         bambuddy_printer_ids=(),
         device_id="ABC12345",
+        # An iOS device by default, because that is what most of the suite is
+        # about. The notifications-only tests override it.
+        tiles_enabled=True,
         device_token="XYZ789TOKEN123",
         symbol="printer.fill",
         tint="#00A76F",
