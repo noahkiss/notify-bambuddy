@@ -226,12 +226,15 @@ def test_one_whole_print_from_a_bambuddy_status_response_to_https(gateway, clock
     assert start["body"]["title"] == "Workshop H2C"
     assert start["body"]["body"] == "Articulated Octopus"
     assert start["body"]["endsIn"] == 43 * 60, "minutes must be converted to seconds"
-    # The reading says 52%, and the tile says 0. BambuBuddy never resets its
-    # progress field when a print begins, so a percentage that has not been
-    # seen to MOVE may well belong to the previous print. Showing it would put
-    # a fresh tile at 52% and then jump it backwards.
-    assert start["body"]["progress"] == 0, \
-        "a percentage that has not moved yet cannot be believed"
+    # The reading says 52% and so does the tile. This print was already under
+    # way when the service first looked, so nothing stale can be in that
+    # number: there was no previous print for it to be left over from, as far
+    # as this process ever saw. Pinning it here would show an empty bar until
+    # the percentage happened to tick, which on a long print is minutes of
+    # looking broken. The opposite case, a print this service watches BEGIN,
+    # is pinned and covered by its own test below.
+    assert start["body"]["progress"] == 52, \
+        "an adopted print's percentage is genuine from the first reading"
     assert start["body"]["status"] == "Printing"
 
     # --- It reports progress ----------------------------------------------
@@ -382,3 +385,35 @@ def test_a_second_printer_never_touches_the_first_ones_tile(gateway, clock):
     assert updates()[-1]["path"] == f"/live-activity/{second}"
     assert updates()[-1]["body"]["title"] == "Bench A1 (workshop)", \
         "the tile follows the rename rather than being orphaned by it"
+def test_a_print_this_service_watches_begin_has_its_percentage_pinned(gateway, clock):
+    """The other half of the rule, and the reason it exists.
+
+    BambuBuddy does not reset its progress field when a print starts, so the
+    first readings of a NEW print carry the previous print's percentage. When
+    this service saw the printer idle and then saw it start, that number is
+    not to be believed until it moves: otherwise a fresh tile appears at the
+    last print's 97% and then jumps backwards.
+    """
+    REQUESTS.clear()
+    Gateway.counter[0] = 0
+
+    config = make_config(progress_min_interval_s=10, running_grace_s=30)
+    store = Store(":memory:")
+    client = NotifyClient(gateway, config.device_id, config.device_token, timeout=5.0)
+    coordinator = Coordinator(config, store, client)
+    loop = asyncio.new_event_loop()
+
+    # Seen NOT printing first. That is what makes the next start witnessed
+    # rather than adopted.
+    deliver(coordinator, loop, clock, api_status(state="IDLE", progress=97.0,
+                                                 remaining_time=0))
+    clock.advance(15)
+    deliver(coordinator, loop, clock, api_status(state="RUNNING", progress=97.0,
+                                                 remaining_time=120))
+    clock.advance(45)
+    deliver(coordinator, loop, clock, api_status(state="RUNNING", progress=97.0,
+                                                 remaining_time=120))
+
+    assert starts(), "no tile was created"
+    assert starts()[0]["body"]["progress"] == 0, \
+        "the previous print's percentage reached a fresh tile"

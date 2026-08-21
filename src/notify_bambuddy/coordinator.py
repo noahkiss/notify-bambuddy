@@ -141,6 +141,11 @@ class Coordinator:
         #: frame cannot spawn a tile.
         self._running_since: dict[str, float] = {}
 
+        #: Printers seen reporting no print since the last session was opened
+        #: for them. Presence means this service WATCHED the next print begin,
+        #: which is what makes its first percentage suspect.
+        self._saw_idle: set = set()
+
         #: When each printer first started reporting an inactive state while a
         #: session was still open. Feeds INACTIVE_GRACE_SECONDS.
         self._inactive_since: dict[str, float] = {}
@@ -464,7 +469,8 @@ class Coordinator:
     def _open_session(self, serial: str, now: float, *,
                       status: Optional[PrinterStatus] = None,
                       printer_name: Optional[str] = None,
-                      job_name: Optional[str] = None) -> SessionState:
+                      job_name: Optional[str] = None,
+                      adopted: bool = False) -> SessionState:
         """Create a session for a new print and install it as the printer's one.
 
         The single place a session is born, from either of the two things that
@@ -504,6 +510,10 @@ class Coordinator:
             last_source_ts=source_ts,
             last_status_ts=now,
             progress_at_detection=baseline,
+            # An adopted print's percentage is genuine from the first reading:
+            # nothing stale can be in it, because the print was already running
+            # before this service ever looked.
+            progress_trustworthy=adopted,
         )
         self._apply_status_fields(session, status)
         self._sessions[serial] = session
@@ -523,6 +533,10 @@ class Coordinator:
 
         if status.state not in ACTIVE_STATES:
             self._running_since.pop(serial, None)
+            # Remember that this printer was seen NOT printing. It is what
+            # tells a print starting from one already in flight, which decides
+            # whether its first percentage can be believed. See `_open_session`.
+            self._saw_idle.add(serial)
             return
 
         first_seen = self._running_since.setdefault(serial, now)
@@ -532,7 +546,15 @@ class Coordinator:
         if self._store.is_dismissed(serial):
             return
 
-        session = self._open_session(serial, now, status=status)
+        # A print this service WATCHED begin reports the previous print's
+        # percentage for its first few readings, so that number is pinned to
+        # 0 until it moves. A print already under way when this service first
+        # looked has no such problem: its percentage is simply true, and
+        # pinning it means an adopted tile shows an empty bar until the number
+        # happens to tick, which on a long print is minutes of looking broken.
+        adopted = serial not in self._saw_idle
+        self._saw_idle.discard(serial)
+        session = self._open_session(serial, now, status=status, adopted=adopted)
         # The line most people grep their logs for, so it is worded as the
         # user experiences it. "Detected running" would be more literal, since
         # nothing announces a start and this fires a grace window after the
