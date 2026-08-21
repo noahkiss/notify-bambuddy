@@ -1,0 +1,52 @@
+# ---------------------------------------------------------------------------
+# notify-bambuddy .gitignore
+#
+# The single most important entries here are the ones that keep SECRETS out of
+# the repository. The add-on is configured with a Notify device token and a
+# BambuBuddy API key; both live in a .env file that must never be committed.
+# ---------------------------------------------------------------------------
+
+# Secrets and local configuration. Only the example file is tracked.
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+
+# Runtime state. The SQLite database holds the print-session to Live Activity
+# mapping; it is machine-local and never belongs in version control.
+*.db
+*.db-wal
+*.db-shm
+data/
+state/
+
+# Python build and cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.tox/
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Your own working materials, deliberately kept out of the published repo:
+# the wiki submission notes and drafts, and the systemd deployment. Local
+# only, never committed.
+private/

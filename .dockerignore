@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# Build context exclusions.
+#
+# The first entry is the one that matters: without it `docker build` uploads
+# your .env, and NOTIFY_DEVICE_TOKEN ends up baked into the build context of
+# an image you might publish.
+# ---------------------------------------------------------------------------
+
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+
+# Runtime state: machine-local, and never wanted in an image.
+*.db
+*.db-wal
+*.db-shm
+data/
+state/
+
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+htmlcov/
+.coverage
+
+docs/
+*.md
+!README.md
+.DS_Store
+
+# Local working material, never part of an image.
+private/

@@ -1,0 +1,10 @@
+# Files the source distribution needs that setuptools would not infer.
+#
+# The tests are shipped so a packager can run them, which means conftest.py
+# has to come along: it holds every shared fixture and the fake gateway, and
+# without it the whole suite fails at import.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include .env.example
+recursive-include tests *.py

@@ -1,0 +1,89 @@
+# ---------------------------------------------------------------------------
+# notify-bambuddy, the usual way to run it.
+#
+#   cp .env.example .env     # fill in the four required values
+#   docker compose up -d
+#   docker compose logs -f
+#
+# The four values are BAMBUDDY_URL, BAMBUDDY_API_KEY, NOTIFY_DEVICE_ID and
+# NOTIFY_DEVICE_TOKEN. Nothing else to install: this service asks
+# BambuBuddy for printer status directly, using an API key you create under
+# Settings -> API Keys.
+#
+# It is deliberately safe to run this next to BambuBuddy on the same host.
+# Nothing here binds a port to the host, nothing needs a reverse proxy,
+# nothing talks to a printer, and every connection it makes is OUTBOUND, so
+# BambuBuddy never has to be able to reach it.
+#
+# If BambuBuddy itself runs in Docker, uncomment the `networks:` blocks at the
+# bottom and set BAMBUDDY_URL to its service name, for example
+# http://bambuddy:8000. That is the usual setup and needs no published ports
+# on either side.
+# ---------------------------------------------------------------------------
+
+services:
+  notify-bambuddy:
+    image: ghcr.io/simplytoast1/notify-bambuddy:latest
+    # Building from this checkout instead, when working on the code:
+    # build: .
+    container_name: notify-bambuddy
+
+    # `on-failure` with a cap, not `unless-stopped`. A configuration error
+    # exits with a clear message and a non-zero status, and restarting it
+    # forever only buries that message under a scrolling log. Outages are
+    # handled internally with backoff, so a container that keeps exiting means
+    # something a restart cannot fix.
+    restart: on-failure:5
+
+    # Longer than the 15 second HTTP timeout, so a shutdown that lands mid
+    # request finishes cleanly instead of being killed and leaving the state
+    # database to recover from its WAL on the next start.
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
+    volumes:
+      # The print-to-tile mapping. Without a persistent volume, a restart
+      # cannot reattach to tiles that are still on the Lock Screen and cannot
+      # remember which ones were swiped away.
+      - notify-bambuddy-state:/data
+
+    # --- Hardening ------------------------------------------------------
+    # The process is a subscriber and an HTTP client. It writes to exactly one
+    # directory and needs no privileges at all.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # Small by design. Steady state is a few megabytes; the ceiling is a
+    # backstop against a pathological event backlog, not a tuning knob.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Uncomment if BambuBuddy runs in another
+    # Compose project's network.
+    # networks:
+    #   - bambuddy
+
+volumes:
+  notify-bambuddy-state:
+
+# networks:
+#   bambuddy:
+#     external: true
+#     # The network name Compose gives BambuBuddy's project. Check it with
+#     # `docker network ls`; it is usually <project directory>_default.
+#     name: bambuddy_default

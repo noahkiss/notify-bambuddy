@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# notify-bambuddy packaging metadata
+#
+# Deliberately minimal. This is a sidecar service, not a library, so the only
+# thing that really matters here is that `pip install .` produces a working
+# `notify-bambuddy` console script and that the runtime dependency list stays
+# as short as it possibly can.
+#
+# ZERO runtime dependencies. A stock Python is the whole runtime: nothing to
+# audit, nothing to pin, nothing to break on somebody else's release.
+#
+# Everything else is Python's standard library:
+#   - HTTP to the Notify gateway ....... urllib.request (run in a thread pool)
+#   - persistence ...................... sqlite3
+#   - concurrency ...................... asyncio
+#   - health endpoint .................. http.server
+#
+# That is a conscious choice for a self-hosted add-on that people will run
+# unattended on a Raspberry Pi next to their printers. Every dependency is a
+# thing that can break, need patching, or pull in a supply-chain problem, and
+# a service this small does not need a web framework to say "OK" on /healthz.
+# ---------------------------------------------------------------------------
+
+[build-system]
+# 77 is the floor for the PEP 639 `license`/`license-files` keys used below.
+# Anything older reads `license = "AGPL-3.0-or-later"` as an invalid table and
+# refuses to build at all.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "notify-bambuddy"
+version = "0.1.0"
+description = "Turns BambuBuddy print jobs into Notify! Live Activities on iOS"
+readme = "README.md"
+# PEP 639 form. The older `license = { text = ... }` table is deprecated and
+# setuptools warns that support for it ends in February 2027.
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Dan", email = "claude@pingie.com" }]
+keywords = ["bambuddy", "bambu-lab", "3d-printing", "ios", "live-activity", "notify", "lock-screen"]
+
+# Python floor is 3.9, not 3.12, on purpose.
+#
+# The published Docker image runs 3.12, but people also run add-ons straight
+# on whatever Python their box already has: Raspberry Pi OS bookworm ships
+# 3.11, Ubuntu 22.04 ships 3.10, and older NAS boxes ship 3.9. Nothing in this
+# service needs a newer language feature, so refusing to run on 3.9 would cost
+# users installs and buy nothing. `from __future__ import annotations` at the
+# top of every module is what lets the source use modern `X | None` type
+# syntax while still importing on 3.9.
+requires-python = ">=3.9"
+
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: End Users/Desktop",
+  "Programming Language :: Python :: 3",
+  "Topic :: Printing",
+  "Topic :: System :: Monitoring",
+]
+
+# Empty, and worth keeping that way. The default source polls BambuBuddy over
+# HTTP using urllib, and Notify is reached the same way, so a stock Python is
+# the whole runtime. Nothing to audit, nothing to pin, nothing to break on an
+# upgrade.
+dependencies = []
+
+[project.optional-dependencies]
+# Test-only extras. Kept out of the runtime set so the container image does not
+# ship a test framework.
+dev = [
+  "pytest>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/simplytoast1/notify-bambuddy"
+Documentation = "https://github.com/simplytoast1/notify-bambuddy#readme"
+Issues = "https://github.com/simplytoast1/notify-bambuddy/issues"
+
+[project.scripts]
+notify-bambuddy = "notify_bambuddy.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The source distribution ships the tests so a packager can run them, which
+# means conftest.py has to come along: it holds every shared fixture and the
+# fake gateway, and without it the whole suite fails at import. That is what
+# MANIFEST.in is for; setuptools has no `[tool.setuptools.sdist]` table.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `src` so the package is importable straight out of a clone without a `pip
+# install -e .`; `tests` so the shared payload builders in conftest.py can be
+# imported by name rather than smuggled in through fixtures.
+pythonpath = ["src", "tests"]
+addopts = "-q"

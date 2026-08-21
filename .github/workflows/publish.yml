@@ -1,0 +1,82 @@
+# ---------------------------------------------------------------------------
+# Build and publish the container image to GitHub Container Registry.
+#
+# This is what makes the README's setup a paste rather than a build. Without a
+# published image, "add these twelve lines to your compose file" becomes "clone
+# the repository onto your NAS first", which is a different and much worse
+# instruction.
+#
+# Two architectures, because this is not optional for the audience: BambuBuddy
+# is very often on a Raspberry Pi or an ARM NAS, and an amd64-only image fails
+# there with an exec format error that reads like a corrupt download.
+#
+# Tags produced:
+#   ghcr.io/<owner>/notify-bambuddy:latest    every push to main
+#   ghcr.io/<owner>/notify-bambuddy:0.1.0     every v* tag, without the v
+#   ghcr.io/<owner>/notify-bambuddy:0.1       the matching minor series
+#
+# The image is published under the repository owner, so nothing here needs a
+# secret: GITHUB_TOKEN with `packages: write` is enough.
+#
+# NOTE: a package is PRIVATE the first time it is published. Make it public
+# once, under the repository's Packages page, or nobody can pull it and the
+# README's compose snippet fails with an authentication error.
+# ---------------------------------------------------------------------------
+
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  # One build per ref. A rapid second push should replace the first rather
+  # than race it to the registry.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU, so the arm64 layer can be built on an amd64 runner. Slow, but
+      # this image is a pip install and a copy, so it is minutes not hours.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Lowercased by the action, which matters because a registry path
+          # must be lowercase and GitHub usernames are not.
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache in the registry so an unchanged dependency layer is not
+          # rebuilt under emulation on every push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
