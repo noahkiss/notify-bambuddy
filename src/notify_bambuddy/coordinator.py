@@ -289,11 +289,25 @@ class Coordinator:
                     # the next one, and recording it would silence a printer
                     # for the dismissal window over a print that is already
                     # over.
-                    self._store.record_dismissal(session.serial)
+                    self._store.record_dismissal(session.serial, session.job_name)
                     log.info(
                         "Tile for printer %s was dismissed while we were down; not recreating",
                         session.serial,
                     )
+                elif reason == "never-started":
+                    # The same rule the runtime path applies. The gateway
+                    # reports this when it believes a tile never reached the
+                    # device, but a tile iOS displays while the app stays
+                    # closed is never reported back either, so the two are
+                    # indistinguishable. Recreating produced a second tile
+                    # beside a live one on real hardware. A restart must not
+                    # reintroduce the symptom a release was cut to fix.
+                    log.info(
+                        "Tile for printer %s was reported never-started; not recreating it, "
+                        "because a tile iOS is displaying looks the same from here",
+                        session.serial,
+                    )
+                    self._store.record_dismissal(session.serial, session.job_name)
                 else:
                     log.info(
                         "Tile for printer %s is gone (%s); a new one will be created if the "
@@ -524,7 +538,29 @@ class Coordinator:
             return
 
         if self._store.is_dismissed(serial):
-            return
+            # A dismissal belongs to the print it was swiped off, and the only
+            # identity this API gives a print is its file name. A printer
+            # running a DIFFERENT file is running a different print, so the
+            # dismissal has been spent.
+            #
+            # Without this there are two routes to a printer going silent for
+            # the full 72 hour TTL, because the only other thing that spends a
+            # dismissal is the session reaching a terminal state, and both
+            # routes destroy that session first: a restart drops it, and a
+            # telemetry gap long enough to abandon it retires it. Nothing then
+            # remains that can ever clear the row.
+            #
+            # An unknown job (a row written before dismissals carried one)
+            # reads as "cannot tell" and keeps the conservative behaviour.
+            dismissed_job = self._store.dismissed_job(serial)
+            job = job_display_name(status.subtask_name, status.gcode_file)
+            if not (dismissed_job and job and job != dismissed_job):
+                return
+            log.info(
+                "%s is running %s now, not the print whose tile was dismissed; "
+                "clearing the dismissal", serial, self._loggable(job),
+            )
+            self._store.clear_dismissal(serial)
 
         # A print this service WATCHED begin reports the previous print's
         # percentage for its first few readings, so that number is pinned to
@@ -580,8 +616,29 @@ class Coordinator:
         """
         if status.state != STATE_RUNNING:
             return False
-        # Only meaningful once the old session had actually got somewhere.
-        if session.layer_num <= 1 or status.layer_num >= session.layer_num:
+
+        # THE LAYER EDGE CANNOT FIRE ON THIS TRANSPORT. `status_to_event`
+        # hardcodes layer numbers to zero because the REST route does not
+        # report them, so `session.layer_num` is always 0 and the guard below
+        # used to exit on its FIRST clause, before any comparison. The whole
+        # detector was unreachable, and with it the only code that clears a
+        # dismissal when a new print replaces an old one.
+        #
+        # The identities this API does carry are the file name and a
+        # percentage that only ever climbs within one print. Either moving
+        # backwards is a different print.
+        #
+        # `rewound` is gated on `progress_trustworthy` deliberately: an
+        # untrusted baseline is exactly the stale carry-over from the previous
+        # print, and reading that as a rewind would split one print in two on
+        # its first readings. The 5 point margin keeps a jitter of a percent
+        # from doing the same.
+        job = job_display_name(status.subtask_name, status.gcode_file)
+        renamed = bool(job and session.job_name and job != session.job_name)
+        rewound = (session.progress_trustworthy
+                   and status.progress + 5.0 < session.progress)
+        layers_reset = session.layer_num > 1 and status.layer_num < session.layer_num
+        if not (renamed or rewound or layers_reset):
             return False
 
         if self._continuously_running(session, gap):
@@ -1055,12 +1112,26 @@ class Coordinator:
         if not wanted_title:
             return
 
-        for activity in live:
-            if activity.activity_id in owned:
-                continue
-            title = (activity.raw.get("content") or {}).get("title")
-            if title != wanted_title:
-                continue
+        candidates = [
+            a for a in live
+            if a.activity_id not in owned
+            and (a.raw.get("content") or {}).get("title") == wanted_title
+        ]
+
+        if len(candidates) > 1:
+            # Two unowned tiles both claiming to be this printer. `_adopt_orphan`
+            # refuses to choose between these for exactly the right reason, that
+            # guessing risks driving somebody else's tile, and then this swept
+            # in and ended ALL of them. Ending is far more destructive than
+            # adopting, so the same doubt has to stop it too.
+            log.warning(
+                "%d unowned tiles claim to be %s; leaving all of them alone rather than "
+                "guessing which is stale. They expire on their own.",
+                len(candidates), session.serial,
+            )
+            return
+
+        for activity in candidates:
             log.info(
                 "Ending stale tile %s for %s before starting a new one; nothing owns it "
                 "and iOS would leave it on screen for hours",
@@ -1330,7 +1401,7 @@ class Coordinator:
             if session.outcome is None:
                 log.info("Tile for %s was dismissed by the user; not recreating it "
                          "for this print", session.serial)
-                self._store.record_dismissal(session.serial)
+                self._store.record_dismissal(session.serial, session.job_name)
             else:
                 log.info("Tile for %s was swiped away after the print had already "
                          "finished; the next print is unaffected", session.serial)
@@ -1434,6 +1505,20 @@ class Coordinator:
                 self._store.save_session(session)
                 return False
             except NotifyError as exc:
+                if getattr(exc, "retryable", False):
+                    # A 5xx. The client already works this out and nothing was
+                    # reading it, so a server-side wobble was treated the same
+                    # as a permanent refusal and the tile was abandoned live on
+                    # someone's Lock Screen.
+                    log.warning(
+                        "Could not end tile %s (%s); keeping it and retrying",
+                        session.activity_id, exc,
+                    )
+                    session.delivery = Delivery.ENDING
+                    session.end_keep_for = keep_for
+                    self._ends_owed[session.activity_id] = session
+                    self._store.save_session(session)
+                    return False
                 # A 400 or 403: the request will not become valid by repeating
                 # it, and the gateway's own housekeeping reaps the tile in the
                 # end. Close the session rather than retrying forever.
@@ -1575,7 +1660,14 @@ class Coordinator:
         """
         # A copy, because the abandon branch below retires sessions.
         for session in list(self._sessions.values()):
-            if not session.is_live() or session.phase is Phase.TERMINAL:
+            # Deliberately NOT gated on `is_live()`. A DISMISSED session is
+            # exactly the one that most needs retiring: it holds the printer's
+            # slot in `_sessions`, which blocks the creation path entirely, and
+            # the only other thing that frees it is the session reaching a
+            # terminal state, which a dismissed session never does on its own.
+            # Left out, a swipe plus a quiet printer parked that printer until
+            # something restarted the service.
+            if session.phase is Phase.TERMINAL:
                 continue
             if session.last_status_ts <= 0:
                 continue

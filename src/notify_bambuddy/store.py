@@ -108,7 +108,12 @@ CREATE INDEX IF NOT EXISTS sessions_by_serial ON sessions (serial, delivery);
 -- tile" behaviour and survives restarts, which is the case that matters.
 CREATE TABLE IF NOT EXISTS dismissals (
     serial       TEXT PRIMARY KEY,
-    dismissed_at REAL NOT NULL
+    dismissed_at REAL NOT NULL,
+    -- Which print the swipe was made against. A dismissal means "not this
+    -- print", so without this there is nothing that can ever decide the print
+    -- has changed, and a swipe followed by a restart silences the printer for
+    -- the whole TTL. NULL on rows written before this column existed.
+    job          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS meta (
@@ -158,16 +163,30 @@ class Store:
             self._migrate()
             self._db.commit()
 
-    #: Columns added after the first schema existed. `CREATE TABLE IF NOT
-    #: EXISTS` does nothing to a table that is already there, so a database
-    #: written by an older build needs them added explicitly.
-    _ADDED_COLUMNS = (
-        ("start_ambiguous", "INTEGER NOT NULL DEFAULT 0"),
-        ("alert_sent", "INTEGER NOT NULL DEFAULT 0"),
-        ("outcome_inferred", "INTEGER NOT NULL DEFAULT 0"),
-        ("terminal_provisional", "INTEGER NOT NULL DEFAULT 0"),
-        ("end_keep_for", "INTEGER NOT NULL DEFAULT 0"),
-    )
+    #: Columns added after the first schema existed, per table. `CREATE TABLE
+    #: IF NOT EXISTS` does nothing to a table that is already there, so a
+    #: database written by an older build needs them added explicitly.
+    #:
+    #: Keyed by table because forgetting that is a live-upgrade crash: a
+    #: column added only to the CREATE statement exists for a fresh install
+    #: and is missing for everyone who already had the service running, which
+    #: is the exact population an upgrade is for.
+    _ADDED_COLUMNS = {
+        "sessions": (
+            ("start_ambiguous", "INTEGER NOT NULL DEFAULT 0"),
+            ("alert_sent", "INTEGER NOT NULL DEFAULT 0"),
+            ("outcome_inferred", "INTEGER NOT NULL DEFAULT 0"),
+            ("terminal_provisional", "INTEGER NOT NULL DEFAULT 0"),
+            ("end_keep_for", "INTEGER NOT NULL DEFAULT 0"),
+        ),
+        # Nullable with no default: an existing dismissal genuinely does not
+        # know which print it belonged to, and NULL says so honestly. The
+        # reader treats an unknown job as "cannot tell", which keeps the old
+        # conservative behaviour for rows written before this column existed.
+        "dismissals": (
+            ("job", "TEXT"),
+        ),
+    }
 
     def _migrate(self) -> None:
         """Add any column this build expects that an older database lacks.
@@ -177,13 +196,15 @@ class Store:
         behaviour", so an older database simply reads as a service that had
         none of these flags set, which is exactly what it was.
         """
-        existing = {
-            row[1] for row in self._db.execute("PRAGMA table_info(sessions)").fetchall()
-        }
-        for column, spec in self._ADDED_COLUMNS:
-            if column not in existing:
-                self._db.execute(f"ALTER TABLE sessions ADD COLUMN {column} {spec}")
-                log.info("Added the %s column to the session store", column)
+        for table, columns in self._ADDED_COLUMNS.items():
+            existing = {
+                row[1] for row in
+                self._db.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column, spec in columns:
+                if column not in existing:
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+                    log.info("Added the %s column to %s in the state store", column, table)
 
     def _configure(self) -> None:
         # WAL: a reader (the health endpoint) never blocks the writer, and an
@@ -344,7 +365,7 @@ class Store:
 
     # --- Dismissals --------------------------------------------------------
 
-    def record_dismissal(self, serial: str) -> None:
+    def record_dismissal(self, serial: str, job: Optional[str] = None) -> None:
         """Remember that the user swiped away this printer's current tile.
 
         Scoped to the CURRENT PRINT, expressed as "this printer, until a new
@@ -360,10 +381,24 @@ class Store:
         """
         with self._lock:
             self._db.execute(
-                "INSERT OR REPLACE INTO dismissals (serial, dismissed_at) VALUES (?,?)",
-                (serial, time.time()),
+                "INSERT OR REPLACE INTO dismissals (serial, dismissed_at, job) "
+                "VALUES (?,?,?)",
+                (serial, time.time(), job),
             )
             self._db.commit()
+
+    def dismissed_job(self, serial: str) -> Optional[str]:
+        """The print a live dismissal was made against, if it is known.
+
+        None means either no dismissal or one recorded before dismissals
+        carried a job name. Both read as "cannot tell", and the caller keeps
+        the conservative behaviour rather than guessing the print has changed.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT job FROM dismissals WHERE serial = ?", (serial,)
+            ).fetchone()
+        return row["job"] if row else None
 
     def is_dismissed(self, serial: str) -> bool:
         with self._lock:

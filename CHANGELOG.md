@@ -3,6 +3,68 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.3.0
+
+Everything an independent review of the tile lifecycle turned up, plus what
+verifying that review turned up in turn. A minor bump rather than a patch,
+because the state store gains a column and new-print detection changes shape.
+
+### Fixed
+
+- **A swipe followed by a restart, or by a telemetry gap, silenced the printer
+  for 72 hours.** A dismissal now records WHICH print it was made against, and
+  is spent as soon as the printer reports a different file. Previously the
+  only thing that could spend one was the session reaching a terminal state,
+  and both a restart and a long gap destroy that session first, leaving
+  nothing that could ever clear the row.
+
+- **New-print detection could never fire.** It keyed on a layer count going
+  backwards, and the REST route reports no layers at all, so the guard exited
+  before its comparison on every frame. A second print silently rode the
+  first one's session: no completion alert for the first, no start for the
+  second, and the second inherited the first's age, which is what decides the
+  eight hour rollover. It now keys on the file name changing or the
+  percentage rewinding, both of which this API does carry, still behind the
+  gap guard that keeps a multi-plate job as one print.
+
+- **A dismissed session was never retired.** The abandon timer skipped it,
+  because a dismissed session is not "live". It held the printer's only slot,
+  which blocks tile creation entirely, and the one mechanism that could free
+  it was switched off in exactly that state.
+
+- **A retryable server error while ending a tile was treated as permanent.**
+  The client already worked out that a 5xx is worth retrying and nothing read
+  the flag, so a passing wobble abandoned the tile, live, with nothing left
+  that could ever end it.
+
+- **Restart recovery recreated a `never-started` tile**, reintroducing the
+  duplicate-tile symptom 0.2.2 was cut to fix. The runtime path already
+  refused this; recovery now applies the same rule.
+
+- **The stale-tile sweep ended every ambiguous candidate.** Orphan adoption
+  refuses to choose between two tiles claiming the same printer, and the sweep
+  then ended both. Ending is more destructive than adopting, so the same doubt
+  now stops it.
+
+### Changed
+
+- **The test fixture no longer describes hardware that cannot exist.** It
+  defaulted to layer numbers the REST adapter never produces, so every
+  coordinator test ran against an imaginary printer. That single default is
+  why a whole detector sat unreachable under a green suite.
+
+- **The state store migrates columns per table**, not just on `sessions`. A
+  column added only to a `CREATE TABLE` exists for a fresh install and is
+  missing for everyone already running the service, which is the exact
+  population an upgrade is for.
+
+### Documentation
+
+- The operator docs described three behaviours that no longer exist:
+  unconfirmed starts blocking new tiles, `never-started` being recreated, and
+  an escalating local backoff. All three are corrected, with the reasoning
+  that replaced them.
+
 ## 0.2.4
 
 ### Fixed

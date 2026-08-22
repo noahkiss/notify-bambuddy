@@ -24,7 +24,7 @@ from conftest import SERIAL, SERIAL_B, FakeNotify, build, make_config, run, stat
 from notify_bambuddy import coordinator as coordinator_module
 from notify_bambuddy.alerts import COOLDOWN_SECONDS, Alerts
 from notify_bambuddy.coordinator import Coordinator
-from notify_bambuddy.models import Outcome, Phase
+from notify_bambuddy.models import Delivery, Outcome, Phase
 from notify_bambuddy.notify_client import (
     ActivityStatus,
     NotifyAuthError,
@@ -693,9 +693,15 @@ def test_a_terminal_alert_is_not_swallowed_by_the_previous_prints_cooldown(clock
 
 def test_the_layer_counter_is_not_copied_from_an_idle_frame(clock):
     """A FINISH or IDLE frame carries zeros. Copying them in would make the
-    next RUNNING frame look like a layer reset."""
+    next RUNNING frame look like a layer reset.
+
+    Layer numbers are passed EXPLICITLY here, because the fixture now defaults
+    them to zero to match what `status_to_event` can actually produce. This
+    path is currently unreachable in production for exactly that reason, and
+    the test says so rather than quietly implying the field is live.
+    """
     coord, notify, _ = build()
-    run(coord.handle(status(clock, layer_num=150)))
+    run(coord.handle(status(clock, layer_num=150, total_layers=300)))
     run(coord.handle(status(clock, state="IDLE", layer_num=0, total_layers=0)))
     assert coord._sessions[SERIAL].layer_num == 150
     assert coord._sessions[SERIAL].total_layers == 300
@@ -1235,3 +1241,210 @@ def test_a_new_tile_never_inherits_the_previous_tiles_countdown_state(clock):
 
     assert session.sent_eta_seconds is None, \
         "the new tile inherited what the old tile was told about the countdown"
+
+
+# ---------------------------------------------------------------------------
+# A dismissal belongs to one print, and something must always be able to
+# spend it
+# ---------------------------------------------------------------------------
+
+
+def _api_reading(clock, job: str, progress: float = 10.0, state: str = "RUNNING"):
+    """A reading in the shape the REST adapter actually produces.
+
+    Driven through `status_to_event` on purpose. A hand-built PrinterStatus can
+    carry layer numbers that production never has, which is how a whole
+    detector stayed unreachable under a green suite.
+    """
+    from notify_bambuddy.bambuddy_api import status_to_event
+    return status_to_event(
+        {"id": 1, "name": "X1", "connected": True, "state": state,
+         "current_print": job, "progress": progress, "remaining_time": 90},
+        received_at=clock.moment(), expected_id=1,
+    )
+
+
+def test_a_dismissal_is_spent_when_the_printer_moves_on_to_another_print(clock):
+    """Regression: a swipe followed by a restart silenced the printer for 72
+    hours.
+
+    The only other thing that spends a dismissal is the session reaching a
+    terminal state, and a restart drops the dismissed session before it can.
+    Nothing then remained that could ever clear the row, so every later print
+    was refused before a session existed to spend it.
+    """
+    coord, notify, store = build(make_config(running_grace_s=0))
+    store.record_dismissal("bb1", "Job A")
+    assert store.is_dismissed("bb1")
+
+    # A different print starts. Nothing in memory knows about Job A.
+    run(coord.handle(_api_reading(clock, "Job B")))
+    clock.advance(30)
+    run(coord.handle(_api_reading(clock, "Job B")))
+
+    assert not store.is_dismissed("bb1"), "the dismissal outlived the print it belonged to"
+    assert notify.started, "Job B got no tile"
+
+
+def test_a_dismissal_still_suppresses_the_print_it_was_made_against(clock):
+    """The other half. Re-running the SAME job must stay suppressed, or a
+    swipe means nothing at all."""
+    coord, notify, store = build(make_config(running_grace_s=0))
+    store.record_dismissal("bb1", "Job A")
+
+    run(coord.handle(_api_reading(clock, "Job A")))
+    clock.advance(30)
+    run(coord.handle(_api_reading(clock, "Job A")))
+
+    assert store.is_dismissed("bb1")
+    assert not notify.started, "a dismissed print was given a tile anyway"
+
+
+def test_a_dismissal_with_no_recorded_job_stays_conservative(clock):
+    """Rows written before dismissals carried a job read as "cannot tell", and
+    must keep the old behaviour rather than guessing the print has changed."""
+    coord, notify, store = build(make_config(running_grace_s=0))
+    store.record_dismissal("bb1")          # no job, as an older build wrote it
+
+    run(coord.handle(_api_reading(clock, "Job B")))
+    clock.advance(30)
+    run(coord.handle(_api_reading(clock, "Job B")))
+
+    assert not notify.started, "an unknown dismissal was guessed to be spent"
+
+
+def test_a_dismissed_session_is_still_retired_when_the_printer_goes_quiet(clock):
+    """A dismissed session holds the printer's only slot in `_sessions`, which
+    blocks the creation path entirely. The abandon timer was gated on
+    `is_live()`, which is False for a dismissed session, so the one mechanism
+    that could free the slot was switched off in precisely the state that
+    needed it."""
+    coord, notify, _ = build(make_config(silence_after_s=60, abandon_after_s=300))
+    run(coord.handle(status(clock)))
+    notify.dismiss(notify.started[0]["activityId"])
+    clock.advance(30)
+    run(coord.handle(status(clock)))
+    assert coord._sessions[SERIAL].delivery is Delivery.DISMISSED
+
+    clock.advance(400)
+    run(coord.tick())
+    # The abandon decides the outcome; the terminal hold then has to expire
+    # before the session is let go, exactly as for any other ending.
+    clock.advance(200)
+    run(coord.tick())
+
+    assert SERIAL not in coord._sessions, \
+        "a dismissed session was never retired, blocking the printer indefinitely"
+
+
+# ---------------------------------------------------------------------------
+# New-print detection on an API that reports no layers
+# ---------------------------------------------------------------------------
+
+
+def test_a_different_file_after_a_gap_is_a_new_print(clock):
+    """The detector keyed on a layer count going backwards, which this
+    transport hardcodes to zero, so it could never fire. Without it a second
+    print silently rode the first one's session: no completion alert for the
+    first, no start for the second, and the second inherited the first's age,
+    which is what decides the eight hour rollover."""
+    coord, notify, _ = build(make_config(running_grace_s=0, silence_after_s=90))
+    run(coord.handle(_api_reading(clock, "Job A", progress=90.0)))
+    clock.advance(30)
+    run(coord.handle(_api_reading(clock, "Job A", progress=95.0)))
+    first_key = coord._sessions["bb1"].session_key
+
+    # A gap longer than the silence window, then a different file.
+    clock.advance(200)
+    run(coord.handle(_api_reading(clock, "Job B", progress=2.0)))
+
+    assert coord._sessions["bb1"].session_key != first_key, \
+        "a different file after a gap kept the previous print's session"
+
+
+def test_a_plate_change_within_one_job_keeps_its_tile(clock):
+    """The guard on the above. A multi-plate job changes file mid-print while
+    the printer never stops running, and that must NOT split into two tiles."""
+    coord, notify, _ = build(make_config(running_grace_s=0, silence_after_s=90))
+    run(coord.handle(_api_reading(clock, "plate_1", progress=90.0)))
+    clock.advance(30)
+    run(coord.handle(_api_reading(clock, "plate_1", progress=95.0)))
+    first_key = coord._sessions["bb1"].session_key
+
+    # No gap: the printer has been running throughout.
+    clock.advance(20)
+    run(coord.handle(_api_reading(clock, "plate_2", progress=2.0)))
+
+    assert coord._sessions["bb1"].session_key == first_key, \
+        "a plate change inside one job was split into two prints"
+
+
+def test_a_server_error_while_ending_keeps_the_tile_owned(clock):
+    """The client already works out that a 5xx is retryable and nothing read
+    it, so a server-side wobble was treated exactly like a permanent refusal:
+    the session was closed and the tile abandoned, live, on someone's Lock
+    Screen with nothing left that could ever end it.
+
+    A safety valve was built, tested, and never connected to anything.
+    """
+    from notify_bambuddy.notify_client import NotifyError
+
+    coord, notify, _ = build(make_config(terminal_hold_s=0))
+    run(coord.handle(status(clock)))
+    activity = notify.started[0]["activityId"]
+
+    boom = NotifyError("upstream exploded", 503)
+    boom.retryable = True
+    notify.fail_next("end", boom)
+
+    run(coord.handle(status(clock, state="FINISH")))
+    clock.advance(coordinator_module.INACTIVE_GRACE_SECONDS + 1)
+    run(coord.handle(status(clock, state="FINISH")))
+    clock.advance(5)
+    run(coord.tick())
+
+    # The retry runs on the same tick and succeeds, which is the point: the
+    # tile is ENDED rather than abandoned. Asserting on `_ends_owed` would be
+    # asserting that the retry had not happened yet.
+    assert activity in [a for a, _, _ in notify.ended], \
+        "a retryable failure abandoned the tile instead of retrying it"
+
+
+def test_the_sweep_refuses_when_two_unowned_tiles_claim_the_same_printer(clock):
+    """`_adopt_orphan` declines to choose between two same-titled candidates,
+    for the right reason: guessing risks driving somebody else's tile. The
+    sweep then swept in and ended ALL of them. Ending is far more destructive
+    than adopting, so the same doubt has to stop it too."""
+    coord, notify, _ = build()
+    a = notify.plant_orphan(title="X1C-1")
+    b = notify.plant_orphan(title="X1C-1")
+
+    run(coord.handle(status(clock)))
+
+    ended = [x for x, _, _ in notify.ended]
+    assert a not in ended and b not in ended, \
+        "two ambiguous tiles were both ended on a guess"
+
+
+def test_recovery_does_not_recreate_a_never_started_tile(clock):
+    """The runtime path refuses this, because a tile iOS displays while the app
+    stays closed is reported the same way as one that never arrived. A restart
+    must not reintroduce the duplicate-tile symptom a release was cut to fix."""
+    from notify_bambuddy.notify_client import ActivityStatus
+
+    coord, notify, store = build()
+    run(coord.handle(status(clock)))
+    activity = notify.started[0]["activityId"]
+
+    # The gateway reports the tile as gone, never-started.
+    notify.states[activity] = ActivityStatus(
+        activity_id=activity, state="ended", end_reason="never-started",
+        expires_at=None, raw={"activityId": activity, "state": "ended",
+                              "endReason": "never-started"},
+    )
+
+    coord2, notify2, _ = build(store=store, notify=notify)
+    run(coord2.recover())
+
+    assert store.is_dismissed(SERIAL), \
+        "recovery did not suppress a never-started tile the way runtime does"

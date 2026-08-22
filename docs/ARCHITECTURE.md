@@ -380,13 +380,21 @@ which stays readable for a day after a tile ends.
 | `dismissed` | The user swiped it away | Never recreate it for this print |
 | `dead-token` | The tile vanished from the device | Same as dismissed |
 | `script` | We ended it | Nothing |
-| `never-started` | The push never produced a tile | Recreate |
+| `never-started` | The gateway believes the push produced no tile | **Never recreate**, at runtime or on restart |
 | `overdue` | The countdown lapsed 30 min ago | Recreate |
 | `abandoned` | A countdown-less tile went 2h silent | Recreate |
 | `expired` | Past Apple's 8-hour ceiling | Recreate |
 
-Conflating the top two with the bottom four is how an integration permanently
-stops working for a printer whose ETA happened to overrun by half an hour.
+`never-started` sits with the top group despite sounding like the bottom one,
+and that was learned the hard way. A tile iOS displays while the Notify app
+stays closed is never reported back either, so from here it is
+indistinguishable from one that truly never arrived. Recreating on it put a
+second tile beside a live one on real hardware. It is now refused on both the
+runtime and the restart paths.
+
+Conflating the dismissal group with the recreate group is how an integration
+permanently stops working for a printer whose ETA happened to overrun by half
+an hour.
 Every `410` is classified before anything is decided. When the reason cannot
 be established, the service errs toward **not** suppressing: a missing tile
 someone wanted is a bug report, a silently suppressed printer looks like the
@@ -488,18 +496,32 @@ Waiting does not fix it. The counter resets when the phone reports a fresh
 credential, which happens when the user opens the Notify app.
 
 So 90 seconds after every start, this service asks whether the tile is
-`active` yet. If it is still `starting`, it logs one actionable line naming
-the fix and **stops starting tiles** for 15 minutes, then an hour, then three,
-escalating per consecutive loss and resetting the moment any tile is confirmed.
+`active` yet. If it is still `starting`, it logs one line naming BOTH
+possibilities, and does nothing else.
 
-What it deliberately does NOT do is end the pending tile and try again. A
-first version did exactly that, and the result was one discarded push every
-ninety seconds forever: each one kept Apple's throttle shut, and ending the
-row forfeited the gateway's own recovery, which re-sends any start still inside
-its fifteen-minute window the moment the phone reports a fresh credential. The
-only time a stuck tile is ended early now is when another print is actually
-waiting for its slot. A `429` is a hard circuit breaker on starts; updates and
-ends are never gated by either.
+That restraint is the whole lesson of this section, and it was learned by
+getting it wrong twice.
+
+The first version ended the pending tile and started another. The result was
+one discarded push every ninety seconds forever: each kept Apple's throttle
+shut, and ending the row forfeited the gateway's own recovery, which re-sends
+any start still inside its fifteen-minute window once the phone reports a
+fresh credential.
+
+The second version stopped starting tiles instead, escalating 15 minutes to an
+hour to three. That was worse. A tile is confirmed only when the app reports
+that iOS displayed it, and for a background integration the app is normally
+closed, so a HEALTHY tile is routinely unconfirmed. Every blocked print then
+produced another unconfirmed start on the next attempt, escalating the block
+further, while the gateway counted the same events towards its own `429`. On
+real hardware a working phone went nearly two hours with no tiles, with the
+supposedly missing tile visible the entire time.
+
+An unconfirmed start is therefore **not a signal this service acts on**. The
+gateway's `429` is the only thing that blocks starts, because the gateway is
+the only party that can see whether the device is receiving them. Updates and
+ends are never gated by either. Being wrong in the other direction costs a
+duplicate tile at worst, which the stale-tile sweep already handles.
 
 ---
 

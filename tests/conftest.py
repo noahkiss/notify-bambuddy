@@ -316,18 +316,35 @@ def run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def build(config=None, notify=None, with_alerts: bool = False):
-    """A coordinator wired to an in-memory store and a fake gateway."""
+def build(config=None, notify=None, with_alerts: bool = False, store=None):
+    """A coordinator wired to an in-memory store and a fake gateway.
+
+    `store` and `notify` can be passed in to model a RESTART: a second
+    coordinator over the same persisted state and the same gateway is exactly
+    what the next process sees.
+    """
     config = config or make_config()
     notify = notify or FakeNotify(max_tiles=config.max_tiles)
-    store = Store(":memory:")
+    store = store if store is not None else Store(":memory:")
     alerts = Alerts(config, notify) if with_alerts else None
     return Coordinator(config, store, notify, alerts=alerts), notify, store
 
+#: One reading, in the shape the service can actually receive.
+#:
+#: LAYERS DEFAULT TO ZERO ON PURPOSE. `bambuddy_api.status_to_event` hardcodes
+#: both layer fields to 0, because BambuBuddy's status route does not report
+#: them. A fixture that supplied 10 and 300 meant every coordinator test ran
+#: against a printer that does not exist, and that single default is why a
+#: whole detector sat unreachable under a green suite: the tests fed it an
+#: input production cannot produce, so it worked in tests and never once ran
+#: in the field.
+#:
+#: Pass layer numbers explicitly only when testing the layer path itself, and
+#: expect that path to be dead code until the API reports layers.
 
 def status(clock: Clock, *, serial: str = SERIAL, state: str = "RUNNING",
            progress: float = 10.0, remaining_minutes: int = 100,
-           layer_num: int = 10, total_layers: int = 300, connected: bool = True,
+           layer_num: int = 0, total_layers: int = 0, connected: bool = True,
            subtask_name: str = "Benchy", offset: float = 0.0,
            awaiting_plate_clear: bool = False, printer_name: str = "X1C-1") -> PrinterStatus:
     return PrinterStatus(

@@ -157,47 +157,52 @@ if that machine is shared.
 
 ---
 
-## The log says the tile started, but nothing appeared
+## The log says the tile started, and I am not sure it appeared
 
-This is almost always one thing, and after 90 seconds the service says so:
+After 90 seconds the service checks whether the gateway has heard that the
+tile reached the phone, and says so if it has not:
 
 ```
-Tile LA7Q2ZKM for bb1 was accepted but has not appeared on the phone. This
-usually means iOS is discarding Live Activity starts because Notify's start
-credential is stale. Open the Notify app once on the device.
+Tile LA7Q2ZKM for bb1 has not been confirmed by the Notify app. If it IS on
+your Lock Screen, nothing is wrong: the app only confirms tiles while it is
+open. If no tile appeared, open the Notify app once on the device to refresh
+its start credential.
 ```
 
-**Open the Notify app on the phone, once.** That is the whole fix.
+**Look at your Lock Screen.** That message names both possibilities because
+this service genuinely cannot tell them apart, and the common one is benign.
 
-While that is outstanding the service deliberately does NOT end the pending
-tile and try again. Each retry would be another push iOS discards, which keeps
-Apple's throttle shut, and the gateway itself re-sends any start still inside
-its fifteen-minute window the moment the phone reports a fresh credential. So
-the tile is left for the gateway to finish, further starts are held back for
-15 minutes (then an hour, then three), and the only time a stuck tile is ended
-early is when another print is waiting for its slot.
+A tile is confirmed only when the Notify app reports that iOS displayed it,
+and for a background integration the app is normally closed, which is the
+entire point of push-to-start. So a perfectly healthy tile can sit on your
+Lock Screen for hours and never be confirmed.
 
-The reason is worth knowing because nothing else in the stack reports it. iOS
+**If the tile is there, ignore the message.** Nothing is blocked and nothing
+is retried. Earlier versions treated this as a failure and stopped starting
+tiles, which escalated into a self-inflicted outage; that is gone.
+
+**If no tile appeared**, opening the Notify app once is the whole fix. iOS
 lets an app create a Live Activity while it is closed using a credential
 registered at launch. Updating or reinstalling the app rotates that
-credential, and pushes sent to the old one are accepted by Apple and then
-silently discarded. No error reaches the gateway, the app, or you.
+credential, and pushes to the old one are accepted by Apple and then silently
+discarded. No error reaches the gateway, the app, or you.
 
-The gateway defends the device's spawn budget: after two confirmed losses it
-refuses further starts with a `429` and an escalating quiet period (30
-minutes, then 3 hours, then 6). Waiting alone does **not** clear it. The
-counter resets when the phone reports a fresh credential, which happens when
-you open the app.
+### Notify is refusing new tiles
 
-If that has already happened, the status output tells you how long is left:
+Separately from anything this service decides, the gateway defends the
+device's spawn budget. After repeated starts it believes never landed, it
+refuses further ones with a `429` and a quiet period:
 
-```json
-"starts_blocked_for": 1620.0,
-"starts_blocked_reason": "Notify is refusing new tiles for this device because
-  recent ones never appeared. Open the Notify app once on the phone..."
+```
+Notify is refusing new tiles for this device because recent ones never
+appeared. Open the Notify app once on the phone to refresh its credential,
+then wait N minutes.
 ```
 
-Open the app, then wait out the stated time.
+**Waiting alone does not clear this.** The counter resets when the phone
+reports a fresh credential, which happens when you open the app. This is the
+gateway's decision, not this service's, and there is nothing to configure
+here.
 
 ---
 
