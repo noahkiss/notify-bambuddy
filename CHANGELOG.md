@@ -3,6 +3,23 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.3.2
+
+### Documentation
+
+- **`docs/UPSTREAM.md` reads as an offer rather than a review.** The content
+  was right and the register was wrong: it described difficulties as faults in
+  BambuBuddy, quoted that project's own contributing rules back at its
+  maintainer, and justified its size estimates in terms of this author's
+  credibility.
+
+  Every difficulty is now stated as something hit while building this, because
+  that is what they were. All four are consequences of a Live Activity being
+  stateful in a pipeline correctly built for stateless messages, not faults in
+  anything. The process section is replaced by a statement of what will be done
+  rather than a list of rules to avoid tripping over, and the close says
+  plainly that adding four fields is a good outcome on its own.
+
 ## 0.3.1
 
 ### Documentation
