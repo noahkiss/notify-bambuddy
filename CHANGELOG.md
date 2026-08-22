@@ -3,6 +3,27 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.3.1
+
+### Documentation
+
+- **`docs/UPSTREAM.md` is now an implementation guide**, not a list of
+  requests. It offers two independent routes: four additive fields on the
+  status route, or building Live Activities into BambuBuddy natively as a
+  provider type.
+
+  The native route is mapped against BambuBuddy's own Bark commit, which is
+  the precedent for what a new provider costs, and pre-solves the four things
+  that break when a resource-shaped feature is bolted to a message-shaped
+  pipeline: no job identity reaching the sender, progress firing three times
+  per print, quiet hours swallowing the end call and reporting success, and
+  the write-lock rule that makes the obvious place to keep state the wrong
+  one. Each has a diff rather than advice.
+
+  It is deliberately honest about size: the provider type is an afternoon, the
+  lifecycle behind it is a long weekend, and shipping the first without the
+  second puts a tile on someone's Lock Screen that is never taken off.
+
 ## 0.3.0
 
 Everything an independent review of the tile lifecycle turned up, plus what

@@ -137,7 +137,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.1
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -174,7 +174,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.1
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -193,7 +193,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.3.0
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.3.1
 ```
 
 ```bash
@@ -262,7 +262,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.3.0
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.3.1
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -478,12 +478,16 @@ so polling gives a better tile for less setup.
 If you maintain BambuBuddy, or want to send this upstream:
 **[`docs/UPSTREAM.md`](docs/UPSTREAM.md)**.
 
-The short version is that this needs nothing from BambuBuddy to work, and four
-fields it already holds in memory (`layer_num`, `total_layers`, `hms_errors`
-and `subtask_id`) would close every remaining gap if they were added to
-`GET /api/v1/webhook/printer/{id}/status`. That page also documents the one
-thing worth fixing regardless of this add-on: `remaining_time` is minutes on
-that route and seconds in the notification pipeline, and nothing says so.
+It covers two independent options. Four fields BambuBuddy already holds in
+memory (`layer_num`, `total_layers`, `hms_errors`, `subtask_id`) added to
+`GET /api/v1/webhook/printer/{id}/status`, which is twenty minutes and closes
+every gap this add-on works around. Or building it in natively as a provider
+type, with the plumbing mapped against BambuBuddy's own Bark commit and the
+four things that break pre-solved.
+
+It also documents the one thing worth fixing regardless: `remaining_time` is
+minutes on that route and seconds in the notification pipeline, and nothing
+says so.
 
 ---
 
