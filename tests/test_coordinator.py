@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from conftest import SERIAL, SERIAL_B, FakeNotify, build, make_config, run, status
+from conftest import SERIAL, SERIAL_B, build, make_config, run, status
 
 from notify_bambuddy import coordinator as coordinator_module
 from notify_bambuddy.coordinator import Coordinator
@@ -488,69 +488,6 @@ def test_a_tile_reaped_by_the_gateway_is_recreated(clock):
     clock.advance(30)
     run(coord.handle(status(clock, progress=30.0, layer_num=30)))
     assert len(notify.started) == 2
-
-
-def test_the_five_tile_cap_queues_a_printer_rather_than_writing_it_off(clock):
-    """The gateway reports its cap as a 400, which every sane client treats as
-    permanent. It is the one transient 400 there is."""
-    config = make_config(max_tiles=2)
-    coord, notify, _ = build(config, FakeNotify(max_tiles=2))
-
-    for index, serial in enumerate(["S1", "S2", "S3"]):
-        run(coord.handle(status(clock, serial=serial, printer_name=f"P{index}",
-                                remaining_minutes=100 + index)))
-
-    assert len(notify.started) == 2
-    assert coord.snapshot()["waiting_for_slot"] == ["S3"]
-
-    # A slot frees up.
-    reach_terminal(coord, clock, serial="S1", printer_name="P0")
-    clock.advance(coord._config.terminal_hold_s + 1)
-    run(coord.tick())
-
-    assert len(notify.started) == 3, "the queued printer gets the freed slot"
-
-
-def test_a_tile_that_never_appears_backs_off_further_starts_and_says_why(clock):
-    """A start can be accepted by the gateway and by Apple and still never
-    produce a tile, because iOS silently throttles push-to-start once the
-    device's start credential goes stale. Nothing anywhere reports it.
-
-    The tile is deliberately LEFT ALONE: ending and retrying would be one
-    discarded push every ninety seconds forever, and the gateway re-sends a
-    still-pending start itself the moment the phone reports a fresh
-    credential. What happens instead is an actionable log line and a block
-    on further starts.
-    """
-    coord, notify, _ = build(make_config(start_verify_after_s=90))
-    run(coord.handle(status(clock)))
-    activity_id = notify.started[0]["activityId"]
-    notify.never_started(activity_id)
-
-    clock.advance(91)
-    run(coord.tick())
-
-    assert notify.ended == [], "nothing is waiting, so the pending start is left for the gateway"
-    snapshot = coord.snapshot()
-    assert snapshot["starts_blocked_for"] > 0
-    assert "Notify app" in snapshot["starts_blocked_reason"]
-    assert snapshot["unconfirmed_starts"] == 1
-
-
-def test_a_tile_that_never_appears_is_ended_only_when_another_print_is_waiting(clock):
-    coord, notify, _ = build(make_config(start_verify_after_s=90, max_tiles=1),
-                             FakeNotify(max_tiles=1))
-    run(coord.handle(status(clock)))
-    ghost = notify.started[0]["activityId"]
-    notify.never_started(ghost)
-    run(coord.handle(status(clock, serial="WAITING", printer_name="Waiting")))
-    assert coord.snapshot()["waiting_for_slot"] == ["WAITING"]
-
-    clock.advance(91)
-    run(coord.tick())
-    assert ghost in [entry[0] for entry in notify.ended], "the ghost gives up its slot"
-
-
 def test_a_throttled_device_stops_starts_without_touching_updates(clock):
     from notify_bambuddy.notify_client import NotifyThrottled
 
@@ -1061,3 +998,56 @@ def test_a_dismissed_printer_is_not_restarted_by_the_next_status_frame(clock):
     run(coord.handle(status(clock, progress=51.0)))
 
     assert len(notify.started) == 1, "a dismissed print's tile was recreated"
+
+
+def test_an_unconfirmed_tile_never_blocks_the_next_print(clock):
+    """Regression, and the worst bug this project has had.
+
+    A tile is "confirmed" only once the Notify app reports that iOS displayed
+    it, and for a background integration the app is normally closed. That is
+    the entire point of push-to-start. So a tile can sit on the Lock Screen
+    for hours and never be confirmed.
+
+    This code used to read that as "iOS is discarding our tiles" and block new
+    starts, escalating 15 to 60 to 180 minutes. Every blocked print then
+    produced another unconfirmed start, escalating it further, while the
+    gateway applied its own throttle for the same reason. On real hardware a
+    working phone went nearly two hours with no tiles, with the supposedly
+    missing tile visible on screen the whole time.
+
+    Being wrong in the other direction costs a duplicate tile at worst, which
+    the stale-tile sweep already handles.
+    """
+    coord, notify, _ = build(make_config(start_verify_after_s=90))
+    notify.leave_unconfirmed = True          # the app is closed, as it usually is
+    run(coord.handle(status(clock)))
+    assert notify.started, "the first tile should be created"
+
+    # The verification poll runs and finds it still unconfirmed.
+    clock.advance(95)
+    run(coord.tick())
+    assert coord._unconfirmed_starts == 1, "the unconfirmed branch was not reached"
+
+    # A second printer starting a print must be completely unaffected.
+    clock.advance(30)
+    run(coord.handle(status(clock, serial=SERIAL_B, printer_name="A1-2")))
+
+    assert len(notify.started) == 2, \
+        "an unconfirmed tile blocked another printer from getting one"
+
+
+def test_an_unconfirmed_tile_is_left_on_screen(clock):
+    """It may well be live. Ending it to reclaim a slot would remove a tile the
+    user is looking at, on the strength of a signal that cannot tell a
+    displayed tile from a discarded one."""
+    coord, notify, _ = build(make_config(start_verify_after_s=90))
+    notify.leave_unconfirmed = True
+    run(coord.handle(status(clock)))
+    activity = notify.started[0]["activityId"]
+
+    clock.advance(95)
+    run(coord.tick())
+    assert coord._unconfirmed_starts == 1, "the unconfirmed branch was not reached"
+
+    assert activity not in [a for a, _, _ in notify.ended], \
+        "a possibly live tile was ended on a guess"

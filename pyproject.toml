@@ -30,7 +30,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "notify-bambuddy"
-version = "0.2.2"
+version = "0.2.3"
 description = "Turns BambuBuddy print jobs into Notify! Live Activities on iOS"
 readme = "README.md"
 # PEP 639 form. The older `license = { text = ... }` table is deprecated and

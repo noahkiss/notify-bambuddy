@@ -3,6 +3,32 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.2.3
+
+### Fixed
+
+- **An unconfirmed tile no longer blocks the next print.** This service was
+  manufacturing its own outage, and it is the worst bug the project has had.
+
+  A tile counts as "confirmed" only once the Notify app reports that iOS
+  displayed it. For a background integration the app is normally closed, which
+  is the entire point of push-to-start, so a tile can sit on the Lock Screen
+  for hours and never be confirmed. This code read that as "iOS is discarding
+  our tiles" and blocked new starts, escalating 15 to 60 to 180 minutes. Every
+  blocked print then produced another unconfirmed start, escalating further,
+  while the gateway applied its own throttle for the same reason. The two fed
+  each other until a working phone went nearly two hours with no tiles, with
+  the supposedly missing tile visible the whole time.
+
+  An unconfirmed start now logs one warning that names both possibilities and
+  does nothing else. The gateway's own `429` remains the only thing that
+  blocks starts, since it is the only party that can actually see whether the
+  device is receiving them.
+
+- **An unconfirmed tile is no longer ended to reclaim its slot.** It may well
+  be live, and removing a tile the user is looking at on the strength of a
+  signal that cannot tell displayed from discarded is the wrong trade.
+
 ## 0.2.2
 
 ### Fixed

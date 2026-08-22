@@ -99,26 +99,6 @@ SERVICE_BACKOFF_SECONDS = 300.0
 #: enough that five queued printers do not each cost a 15 second timeout on
 #: the event loop every five second tick. Terminal sends ignore it.
 GATEWAY_BACKOFF_SECONDS = 60.0
-
-#: When a started tile has still not been CONFIRMED by the app, how long to
-#: stop starting more.
-#:
-#: The signal is genuinely ambiguous and the ladder is sized accordingly.
-#: "Still starting" means the app has not reported the tile back, and a tile
-#: that iOS displayed perfectly well produces exactly that reading while the
-#: app stays closed. From the server side it is indistinguishable from a start
-#: Apple discarded because the credential was stale.
-#:
-#: So this trades two costs. Backing off protects Apple's spawn budget when
-#: starts really are being discarded. Backing off too long denies a working
-#: phone its tiles, which is what a three hour step did on real hardware: the
-#: tile was on screen the whole time. Fifteen minutes twice, then half an
-#: hour, keeps the protection while capping the damage of guessing wrong at
-#: something a user would not notice as "broken".
-UNCONFIRMED_START_BACKOFF = (900.0, 900.0, 1800.0)
-
-
-
 class Coordinator:
     """Owns every session and every call to the Notify gateway."""
 
@@ -1689,33 +1669,35 @@ class Coordinator:
                 # and be classified properly there.
                 continue
 
+            # Unconfirmed is NOT a failure, and treating it as one made this
+            # service the cause of its own outage.
+            #
+            # A tile is "confirmed" only once the Notify app reports back that
+            # iOS displayed it. For a background integration the app is
+            # usually closed, which is the entire point of push-to-start, so a
+            # tile can be on the Lock Screen for hours and never be confirmed.
+            # Observed here on real hardware: the tile was visible the whole
+            # time this code was calling it discarded.
+            #
+            # Acting on that guess blocked new starts, and every blocked print
+            # produced another unconfirmed start on the next attempt, which
+            # escalated the block further. The gateway keeps its own count and
+            # applies its own throttle, so the two fed each other until a
+            # working phone got no tiles for nearly two hours.
+            #
+            # So this now says so once and does nothing else. The gateway's
+            # 429 remains the only thing that actually blocks starts: it is
+            # the only party that can see whether the device is receiving
+            # them, and it is already honoured elsewhere.
             self._unconfirmed_starts += 1
-            delay = UNCONFIRMED_START_BACKOFF[
-                min(self._unconfirmed_starts, len(UNCONFIRMED_START_BACKOFF)) - 1
-            ]
-            self._block_starts(
-                now, delay,
-                f"Tile {activity_id} for {session.serial} was accepted but has not appeared "
-                "on the phone. This usually means iOS is discarding Live Activity starts "
-                "because Notify's start credential is stale: open the Notify app once on the "
-                f"device. Not starting any more tiles for {int(delay // 60)} minutes.",
-                None, level=logging.ERROR,
+            log.warning(
+                "Tile %s for %s has not been confirmed by the Notify app. If it IS on your "
+                "Lock Screen, nothing is wrong: the app only confirms tiles while it is "
+                "open. If no tile appeared, open the Notify app once on the device to "
+                "refresh its start credential.",
+                activity_id, session.serial,
             )
-
-            if self._waiting_for_slot:
-                # Something else wants the slot this ghost is holding. Ending
-                # it costs the gateway's auto-resend for this one tile, which
-                # is the lesser loss when a real print is queued behind it.
-                log.info("Ending unconfirmed tile %s to free its slot for a waiting print",
-                         activity_id)
-                try:
-                    await self._client.end(activity_id, None, 0)
-                except NotifyError:
-                    pass
-                session.activity_id = None
-                session.delivery = Delivery.PENDING
-                self._store.save_session(session)
-                self._queue_for_slot(session)
+            continue
 
     async def _rollover(self, now: float) -> None:
         """Replace a tile that is approaching Apple's eight-hour ceiling.

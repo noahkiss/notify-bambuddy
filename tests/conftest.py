@@ -134,6 +134,13 @@ class FakeNotify:
         self._maybe_fail("link")
         return self.link_response
 
+    #: When True, every started tile stays in the gateway's `starting` state
+    #: instead of becoming `active`. That is what a real device does whenever
+    #: the Notify app is closed, which for a background integration is most of
+    #: the time: iOS shows the tile, but nothing reports back that it did.
+    #: Tests that care about the verification poll set this.
+    leave_unconfirmed: bool = False
+
     async def start(self, content: dict) -> StartedActivity:
         self._maybe_fail("start")
         if len(self.live_ids()) >= self.max_tiles:
@@ -150,7 +157,9 @@ class FakeNotify:
         # the fake "now", and the rollover would fire on the very next tick.
         started_at = datetime.fromtimestamp(coordinator_module.time.time(), tz=timezone.utc)
         self.states[activity_id] = ActivityStatus(
-            activity_id=activity_id, state="active", end_reason=None,
+            activity_id=activity_id,
+            state="starting" if self.leave_unconfirmed else "active",
+            end_reason=None,
             expires_at=(started_at + timedelta(hours=8)).isoformat(),
             raw={"content": dict(content)},
         )
