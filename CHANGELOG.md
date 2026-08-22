@@ -3,6 +3,34 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.2.4
+
+### Fixed
+
+- **Swiping a finished tile away silenced that printer for 72 hours.** The
+  worst defect this project has had, and it needed only the most ordinary
+  gesture: the print ends, the tile says "Print finished", the user swipes it
+  off the Lock Screen.
+
+  A swipe means "not this print". It says nothing about the next one. But the
+  terminal send is what discovers the swipe, by which point this print's
+  dismissal has already been spent, so the dismissal recorded at that moment
+  could never be spent by anything: session creation refuses before a session
+  exists to reach a terminal state. Every subsequent print was silent for the
+  full dismissal TTL, with no error, no log line, and a health endpoint
+  showing a clean idle printer. `recover()` already carried the correct guard
+  and explained the reasoning; the runtime path did not.
+
+- **A recreated or rolled-over tile lost its countdown permanently.**
+  `endsIn` is relative and is only resent once the printer's estimate drifts
+  further than the tolerance from what is believed to be on screen. That
+  belief was kept on the session rather than the tile, so a new activity was
+  compared against a tile that no longer existed. Both estimates then decayed
+  in lockstep, the tolerance was never crossed, and the successor never
+  received a countdown at all: it kept its title, body, progress bar and
+  status word, and silently lost the one field being read. Every rollover on
+  a long print hit this.
+
 ## 0.2.3
 
 ### Fixed

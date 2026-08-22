@@ -50,3 +50,7 @@ htmlcov/
 # the wiki submission notes and drafts, and the systemd deployment. Local
 # only, never committed.
 private/
+
+# Tooling scratch space: agent worktrees and session data. Never part of the
+# project.
+.claude/

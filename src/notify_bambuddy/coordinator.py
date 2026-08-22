@@ -983,6 +983,18 @@ class Coordinator:
         session.start_ambiguous = False
         session.last_sent_at = now
         session.last_progress_sent_at = now
+        # Whatever the PREVIOUS tile was told about the countdown belongs to
+        # that tile, not this one. `endsIn` is relative and is only resent
+        # when the printer's estimate has drifted further than the tolerance
+        # from what is believed to be on screen, so carrying this across a new
+        # activity id compares a brand new tile against a tile that is gone.
+        # Both estimates then decay in lockstep, the tolerance is never
+        # exceeded, and the successor never receives a countdown at all: the
+        # tile keeps its title, body, progress and status word, and silently
+        # loses the one field the user is actually reading. Every rollover on
+        # a long print hit this.
+        session.sent_eta_seconds = None
+        session.sent_eta_at = 0.0
         # Hash the UPDATE-shaped payload, not the start-shaped one. A start
         # carries `symbol` and `tint`, which no update ever repeats, so hashing
         # what was sent would guarantee a mismatch on the very next frame and
@@ -1299,9 +1311,29 @@ class Coordinator:
         session.pending_gone = False
 
         if classified.user_dismissed:
-            log.info("Tile for %s was dismissed by the user; not recreating it for this print",
-                     session.serial)
-            self._store.record_dismissal(session.serial)
+            # A swipe means "not this print". It says nothing about the next
+            # one, so a tile swiped away AFTER its print has already finished
+            # must record NOTHING.
+            #
+            # Getting this wrong silenced a printer for the full dismissal TTL,
+            # three days, and it took the single most ordinary gesture there
+            # is: the print ends, the tile says "Print finished", the user
+            # swipes it off the Lock Screen. `_go_terminal` has already spent
+            # this print's dismissal by then, and the terminal send is what
+            # discovers the 410, so a dismissal recorded here can never be
+            # spent by anything: session creation refuses before a session
+            # exists to reach a terminal state. No error, no log line, and a
+            # health endpoint showing a clean idle printer.
+            #
+            # `recover()` carries this same guard and explains the same
+            # reasoning. The runtime path did not.
+            if session.outcome is None:
+                log.info("Tile for %s was dismissed by the user; not recreating it "
+                         "for this print", session.serial)
+                self._store.record_dismissal(session.serial)
+            else:
+                log.info("Tile for %s was swiped away after the print had already "
+                         "finished; the next print is unaffected", session.serial)
             session.delivery = Delivery.DISMISSED
             session.activity_id = None
             self._store.save_session(session)

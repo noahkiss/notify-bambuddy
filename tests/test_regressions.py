@@ -1150,3 +1150,88 @@ def test_two_printers_with_the_same_name_do_not_reap_each_other(clock):
     assert first not in [a for a, _, _ in notify.ended], \
         "the other printer's live tile was reaped because they share a name"
     assert len(notify.started) == 2, "both printers should have their own tile"
+
+
+# ---------------------------------------------------------------------------
+# A swipe means "not this print", never "not the next one"
+# ---------------------------------------------------------------------------
+
+
+def test_swiping_a_finished_tile_does_not_silence_the_next_print(clock):
+    """The worst bug this project has had, and it took the most ordinary
+    gesture there is.
+
+    The print ends, the tile says "Print finished", the user swipes it off the
+    Lock Screen. `_go_terminal` has already spent this print's dismissal by
+    then, and the terminal send is what discovers the 410, so a dismissal
+    recorded at that point could never be spent by anything: session creation
+    refuses before a session exists to reach a terminal state.
+
+    Every print on that printer was then silent for the full 72 hour TTL, with
+    no error, no log line, and a health endpoint showing a clean idle printer.
+    """
+    coord, notify, store = build(make_config(terminal_hold_s=0))
+    run(coord.handle(status(clock)))
+    activity = notify.started[0]["activityId"]
+
+    # The print finishes, and the user swipes the finished tile away, which
+    # the terminal send is what discovers. A terminal is reached by the
+    # printer holding an inactive state past the grace window.
+    notify.dismiss(activity)
+    run(coord.handle(status(clock, state="FINISH")))
+    clock.advance(coordinator_module.INACTIVE_GRACE_SECONDS + 1)
+    run(coord.handle(status(clock, state="FINISH")))
+    clock.advance(5)
+    run(coord.tick())
+
+    assert not store.is_dismissed(SERIAL), \
+        "a swipe of an already-finished tile was recorded against the next print"
+
+    # And the next print really does get a tile.
+    clock.advance(600)
+    run(coord.handle(status(clock, state="IDLE")))
+    clock.advance(30)
+    run(coord.handle(status(clock, subtask_name="Next Job")))
+    clock.advance(60)
+    run(coord.handle(status(clock, subtask_name="Next Job")))
+
+    assert len(notify.started) == 2, "the next print got no tile"
+
+
+def test_swiping_a_running_prints_tile_still_suppresses_that_print(clock):
+    """The other half of the rule. A swipe mid-print must still be honoured
+    for the print it was made against, or the service becomes a machine for
+    putting a tile back on the Lock Screen of someone who just removed it."""
+    coord, notify, store = build()
+    run(coord.handle(status(clock)))
+    notify.dismiss(notify.started[0]["activityId"])
+
+    clock.advance(30)
+    run(coord.handle(status(clock)))
+
+    assert store.is_dismissed(SERIAL), "a mid-print swipe was not honoured"
+    assert len(notify.started) == 1, "a dismissed tile was recreated"
+
+
+def test_a_new_tile_never_inherits_the_previous_tiles_countdown_state(clock):
+    """`endsIn` is relative and is only resent once the printer's estimate has
+    drifted further than the tolerance from what is believed to be on screen.
+    Carrying that belief across a NEW activity id compares a fresh tile
+    against one that is gone; both estimates then decay in lockstep, the
+    tolerance is never crossed, and the successor never receives a countdown
+    at all.
+
+    The tile keeps its title, body, progress and status word, and silently
+    loses the one field the user is reading.
+    """
+    coord, notify, _ = build()
+    run(coord.handle(status(clock)))
+    session = coord._sessions[SERIAL]
+    assert session.sent_eta_seconds is not None, "the first tile should carry a countdown"
+
+    # Any path that binds a NEW tile to this session must clear it.
+    coord._adopt(session, "LAFRESH01", None, coordinator_module.time.time(),
+                 {"title": "X1C-1"})
+
+    assert session.sent_eta_seconds is None, \
+        "the new tile inherited what the old tile was told about the countdown"
