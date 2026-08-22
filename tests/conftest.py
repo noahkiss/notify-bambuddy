@@ -188,6 +188,26 @@ class FakeNotify:
             raise NotifyError("Invalid token or id not found", 403)
         return state
 
+    def plant_orphan(self, title: str, activity_id: str = None) -> str:
+        """Put a live tile on the device that no session owns.
+
+        Models the several ways one arrives: a start whose response was lost,
+        a tile the gateway reaped while iOS kept showing it, or a state
+        database thrown away with the container. The title is what the sweep
+        matches on, so it is the part that matters.
+        """
+        self._counter += 1
+        activity_id = activity_id or f"LAORPHAN{self._counter:02d}"
+        self.states[activity_id] = ActivityStatus(
+            activity_id=activity_id,
+            state="active",
+            end_reason=None,
+            expires_at=None,
+            raw={"activityId": activity_id, "state": "active",
+                 "content": {"title": title}},
+        )
+        return activity_id
+
     async def list_device(self) -> tuple:
         self._maybe_fail("list_device")
         return tuple(state for state in self.states.values() if state.is_live)

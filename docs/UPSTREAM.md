@@ -159,6 +159,12 @@ right here, offered so nobody has to rediscover them:
   capable build, or every start is refused. This is the single most common
   support question, and it is invisible from the server side: iOS accepts the
   push and discards it silently, so nothing reports an error.
+- **A tile outlives your memory of it.** iOS keeps a Live Activity on the
+  Lock Screen for up to eight hours whether or not your process still holds
+  its id, so the activity id has to be persisted, and a fresh tile must never
+  be started while an old one for the same thing might still be live. Ending
+  is idempotent; not ending is never safe. A tile the user swiped away is gone
+  for good and cannot be revived.
 - **`410` means seven different things.** The status endpoint returns
   `endReason` as a clean field, which is the only way to tell "the user swiped
   it away" from "the gateway tidied up a tile whose print is still running".

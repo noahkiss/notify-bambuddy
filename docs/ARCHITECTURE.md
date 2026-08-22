@@ -432,6 +432,46 @@ verification poll matters.
 
 ---
 
+## A tile outlives this service's memory of it
+
+The single most important thing to understand about Live Activities here:
+**losing the reference to a tile does not remove the tile.** Once iOS has one
+on the Lock Screen it stays for up to eight hours by itself, and Notify's own
+documentation is blunt about the consequence, that a script which simply stops
+calling "strands a frozen 91% in front of the user".
+
+So an activity id is not a cache. It is the only handle that exists for
+something already in front of a person, and it is persisted in SQLite for that
+reason rather than for convenience. Run without a volume and every restart
+abandons whatever is on screen, permanently.
+
+Two further rules follow from how iOS behaves:
+
+- **A tile the user swiped away never comes back.** Dismissal is final for
+  that activity, so a service that tries to "refresh" a dismissed tile
+  achieves nothing and spends its start budget doing it.
+- **A tile must be ENDED, not merely forgotten.** Ending is idempotent, so it
+  is always safe to end something that may already be gone. Not ending is
+  never safe.
+
+Together those mean a fresh tile must never be created while an old one for
+the same printer might still be live. `_reap_stale_tiles` runs before every
+start and ends any tile that no session owns and whose title matches the one
+this printer's tile would carry. There are several ways to arrive with such a
+tile: the gateway reaping one it believed never arrived while iOS displayed it
+anyway, a start whose response was lost, or a state database thrown away with
+the container.
+
+Two details in that sweep are load-bearing:
+
+- **It matches on the title as BUILT**, not the raw printer name, and it skips
+  tiles a live session owns. Two printers named the same thing produce
+  indistinguishable titles, which is an ordinary farm setup, and ownership is
+  then the only thing that stops one printer reaping the other's tile.
+- **It ends by `activityId`, never by device id.** `DELETE` also accepts a
+  device id, but that form ends "the device's single live tile", which with
+  several printers is a coin flip over which one loses its tile.
+
 ## Verifying that a tile actually appeared
 
 A start can be accepted by Notify, accepted by Apple, and still never produce

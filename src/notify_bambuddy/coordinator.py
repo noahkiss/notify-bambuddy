@@ -903,6 +903,10 @@ class Coordinator:
             if await self._adopt_orphan(session, now):
                 return
 
+        # Nothing of this printer's may already be on the Lock Screen when a
+        # fresh tile is created. See `_reap_stale_tiles`.
+        await self._reap_stale_tiles(session)
+
         content = build_content(session, self._config, initial=True)
 
         # Write the intent down BEFORE asking for the tile. If the process
@@ -1014,6 +1018,68 @@ class Coordinator:
         # check, and each one pushes the device closer to the push-to-start
         # throttle.
         self._verify_at[activity_id] = now + self._config.start_verify_after_s
+
+    async def _reap_stale_tiles(self, session: SessionState) -> None:
+        """End any tile of this printer's that no session owns, before starting.
+
+        A tile is not this service's to forget. Once iOS has one on the Lock
+        Screen it stays for up to EIGHT HOURS on its own, and Notify's docs are
+        blunt about it: "a script that simply stops calling strands a frozen
+        91% in front of the user". Losing our reference to a tile does not
+        remove it, so creating a second one puts two tiles for one printer in
+        front of someone, which is exactly what happened on the first real
+        print here.
+
+        There are several ways to arrive with a tile nobody owns:
+
+          * The gateway reaped one it believed never reached the device, while
+            iOS was in fact displaying it.
+          * A start's response was lost, so the tile exists and its id does
+            not.
+          * The state database was lost (no volume, or a rebuilt container),
+            taking every activity id with it while the tiles lived on.
+
+        Matching is on the tile's TITLE as this service would build it, which
+        is the same rule `_adopt_orphan` uses, so a tile belonging to another
+        integration sharing this Notify device is never touched. Ending is
+        idempotent, so racing a tile that is already gone costs nothing.
+
+        Deliberately NOT the device-id form of DELETE. That ends "the device's
+        single live tile", which on a multi-printer setup is a coin flip over
+        which printer loses its tile.
+
+        Best effort: a failure here must not stop a print getting its tile.
+        The worst case is the duplicate this exists to prevent, which is
+        better than no tile at all.
+        """
+        try:
+            live = await self._client.list_device()
+        except NotifyError as exc:
+            log.debug("Could not list tiles before starting %s: %s", session.serial, exc)
+            return
+
+        owned = {s.activity_id for s in self._sessions.values() if s.activity_id}
+        wanted_title = build_content(session, self._config, initial=True).get("title")
+        if not wanted_title:
+            return
+
+        for activity in live:
+            if activity.activity_id in owned:
+                continue
+            title = (activity.raw.get("content") or {}).get("title")
+            if title != wanted_title:
+                continue
+            log.info(
+                "Ending stale tile %s for %s before starting a new one; nothing owns it "
+                "and iOS would leave it on screen for hours",
+                activity.activity_id, session.serial,
+            )
+            try:
+                # No keepFor: this tile is being replaced, not finished, so
+                # there is no outcome worth leaving on screen.
+                await self._client.end(activity.activity_id, None, 0)
+            except NotifyError as exc:
+                log.debug("Could not end stale tile %s: %s", activity.activity_id, exc)
 
     async def _adopt_orphan(self, session: SessionState, now: float) -> bool:
         """Look for a tile the gateway created for a start whose response was lost.

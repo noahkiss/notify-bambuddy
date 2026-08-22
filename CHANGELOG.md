@@ -3,6 +3,35 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.2.2
+
+### Fixed
+
+- **A stale tile is ended before a new one is started.** Losing the reference
+  to a Live Activity does not remove it: iOS keeps one on the Lock Screen for
+  up to eight hours on its own, so a tile whose id this service no longer
+  holds sits there frozen while a replacement appears beside it. Every fresh
+  start now sweeps the device and ends any tile that no session owns and whose
+  title matches the one this printer would carry.
+
+  Three ways to arrive with such a tile, all seen or reachable: the gateway
+  reaping one it believed never appeared while iOS displayed it anyway, a
+  start whose response was lost, and a state database thrown away with the
+  container.
+
+  The sweep skips tiles a live session owns, which matters because two
+  printers with the same name produce indistinguishable titles and ownership
+  is then the only thing stopping one from reaping the other's. It ends by
+  `activityId` and never by device id, since that form ends "the device's
+  single live tile" and would be a coin flip on a multi-printer setup.
+
+### Documentation
+
+- **The tile lifetime rules are written down** in `docs/ARCHITECTURE.md` and
+  summarised for the BambuBuddy maintainer in `docs/UPSTREAM.md`: a tile
+  outlives your memory of it, a swiped tile never returns, and ending is
+  idempotent while not ending never is.
+
 ## 0.2.1
 
 ### Changed

@@ -19,7 +19,7 @@ import json
 import threading
 
 import pytest
-from conftest import SERIAL, FakeNotify, build, make_config, run, status
+from conftest import SERIAL, SERIAL_B, FakeNotify, build, make_config, run, status
 
 from notify_bambuddy import coordinator as coordinator_module
 from notify_bambuddy.alerts import COOLDOWN_SECONDS, Alerts
@@ -1089,3 +1089,64 @@ def test_a_never_started_reap_does_not_create_a_second_tile(clock):
     started_after = [s for s in notify.started if s["activityId"] != first]
     assert not started_after, "a second tile was created alongside one already on screen"
     assert session.activity_id is None
+
+
+# ---------------------------------------------------------------------------
+# Stale tiles are ended before a new one is started
+# ---------------------------------------------------------------------------
+
+
+def test_a_stale_tile_is_ended_before_a_new_one_is_started(clock):
+    """iOS keeps a tile for up to eight hours whether or not this service
+    still has its id, so creating a second one puts two tiles for one printer
+    in front of the user. That is not hypothetical: it happened on the first
+    real print, after the gateway reaped a tile it believed had never appeared
+    while iOS was in fact showing it.
+    """
+    coord, notify, _ = build()
+
+    # A tile for this printer that no session owns, exactly as a lost id or a
+    # rebuilt container would leave behind.
+    ghost = notify.plant_orphan(title="X1C-1")
+
+    run(coord.handle(status(clock)))
+
+    assert ghost in [a for a, _, _ in notify.ended], \
+        "the stale tile was left on the Lock Screen next to the new one"
+    assert notify.started, "a new tile should still be created"
+
+
+def test_another_integrations_tile_is_never_touched(clock):
+    """The same Notify device can host tiles from anything else the user runs.
+    Matching is on the title this service would build, so a tile that is not
+    ours is left alone. Ending someone else's tile would be worse than any
+    duplicate.
+    """
+    coord, notify, _ = build()
+    stranger = notify.plant_orphan(title="Dishwasher")
+
+    run(coord.handle(status(clock)))
+
+    assert stranger not in [a for a, _, _ in notify.ended], \
+        "ended a tile belonging to something else on the same device"
+
+
+def test_two_printers_with_the_same_name_do_not_reap_each_other(clock):
+    """The sweep matches on the tile TITLE, which is the printer's name, so
+    two printers called the same thing produce indistinguishable tiles. A farm
+    with two X1Cs both named "X1" is an ordinary setup, not a contrived one.
+
+    Ownership is the only thing that can tell them apart, and without that
+    check the second printer starting would end the first one's live tile
+    every time.
+    """
+    coord, notify, _ = build()
+    run(coord.handle(status(clock, printer_name="X1")))
+    first = notify.started[0]["activityId"]
+
+    clock.advance(30)
+    run(coord.handle(status(clock, serial=SERIAL_B, printer_name="X1")))
+
+    assert first not in [a for a, _, _ in notify.ended], \
+        "the other printer's live tile was reaped because they share a name"
+    assert len(notify.started) == 2, "both printers should have their own tile"
