@@ -1,10 +1,11 @@
 # Live Activities in BambuBuddy
 
-**For maziggy, or anyone picking this up.** This is a working iOS Live
-Activity integration for BambuBuddy, running against a real X1 today, offered
-as a starting point rather than as a request.
+**For maziggy, or anyone who picks this up.** This is a working iOS Live
+Activity integration for BambuBuddy, running against a real X1 today. It needs
+nothing from you to keep working, so none of this is a request. It is here
+because everything I learned building it is more useful to you than to me.
 
-There are two ways to use it, and they are independent:
+Two independent options, and either one is a good outcome:
 
 - **Add four fields to the status route.** Twenty minutes, no migration, and
   the external add-on stops guessing. [Jump there](#option-a-four-fields-twenty-minutes).
@@ -12,7 +13,7 @@ There are two ways to use it, and they are independent:
   already have. [Jump there](#option-b-native-a-provider-type-you-already-know-how-to-add).
 
 Everything below is checked against `main` as of 2026-08-22, with file paths
-and line numbers. Where something is hard, it says so.
+and line numbers, so nothing here should send you hunting.
 
 ---
 
@@ -96,34 +97,36 @@ Activity provider fits it exactly:
 **That afternoon gets you push notifications through Notify.** It is a real,
 shippable feature on its own, and it is where I would start.
 
-### Now the honest part
+### The part I got wrong first
 
-A Live Activity is not a message. It is a **resource**: created once, updated
-on a cadence, ended exactly once, rolled over at Apple's eight hour ceiling,
-and reconciled after a restart.
+A Live Activity looks like a notification and behaves like a **resource**:
+created once, updated on a cadence, ended exactly once, rolled over at
+Apple's eight hour ceiling, and reconciled after a restart.
 
-Every `_send_*` in your codebase is fire-and-forget: `(config, title,
-message)` in, one HTTP call, `tuple[bool, str]` out, nothing kept. The
-resemblance is close enough to fool anyone for about a day.
+I built mine as though it were a message, and it took me a while to notice.
+The shapes are close enough that the difference does not show up until a print
+ends.
 
-**If you ship the afternoon version without the rest, you ship a feature that
-puts a tile on someone's Lock Screen and never takes it off.** iOS leaves it
-there for up to eight hours. That is worse than not shipping.
+The thing I would most like to save you: **a tile that is never ended stays on
+the Lock Screen for up to eight hours.** So the end call matters more than the
+start one, and it is the call most easily lost.
 
-So the rest of this page is the four things that break, each with the fix,
-because I hit every one of them.
+What follows is the four places that caught me out, each with what I did about
+it. None of them is a problem with BambuBuddy. They are all consequences of
+Live Activities being a stateful thing in a pipeline built, correctly, for
+stateless ones.
 
 ---
 
-### Wall 1: no job identity reaches the sender
+### 1. The sender cannot tell which print it is for
 
 `_send_to_provider` (line 919) receives `provider, title, message, db,
 image_data, event_type, variables`. The only identity in there is
-`variables["printer"]`, a display name a user can rename mid-print.
+`variables["printer"]`, which is a display name.
 
-`printer_id` exists one frame up in `_send_to_providers` and is dropped at the
-call site on line 1069. So the end call cannot find the activity the start
-call created.
+`printer_id` is right there one frame up in `_send_to_providers` and simply
+is not forwarded at line 1069, because nothing has needed it until now. Two
+lines:
 
 ```python
 # notification_service.py:919, add one parameter
@@ -141,21 +144,22 @@ call created.
 
 A row id does not rename. A display name does.
 
-### Wall 2: progress fires three times, and there is no pause event
+### 2. Progress fires three times per print
 
 `main.py:1599-1646` gates progress on 25/50/75 milestones, tracked in
 `_last_progress_milestone`. There is no pause event at all.
 
-Three updates across a print is not a Live Activity. Worse, the gateway reaps
-a tile that has gone quiet for two hours, so a six hour print produces a tile
-that dies at hour two and a phone that is now lying to its owner.
+Perfect for a notification, and not quite enough for a tile: the gateway
+reaps one that has gone quiet for two hours, so a six hour print would show a
+tile that stops updating at hour two.
 
-You already have the pattern for the fix: `start_digest_scheduler` /
-`_digest_scheduler_loop` at `notification_service.py:2365-2387`, wired at
-`main.py:8101` and `8176`. A keepalive loop in that shape, ticking every
-30 to 60 seconds over rows with a live activity id, is roughly 80 lines.
+The good news is you already have the exact pattern for this.
+`start_digest_scheduler` / `_digest_scheduler_loop`
+(`notification_service.py:2365-2387`, wired at `main.py:8101` and `8176`) is
+the shape. A keepalive in that mould, ticking every 30 to 60 seconds over rows
+that hold a live activity id, came to about 80 lines for me.
 
-### Wall 3: quiet hours swallows the end call and reports success
+### 3. Quiet hours also silences the end call
 
 ```python
 # notification_service.py:931-933
@@ -164,30 +168,32 @@ if self._is_in_quiet_hours(provider):
     return True, "Skipped - quiet hours"
 ```
 
-Start a print at 21:00 with quiet hours from 22:00, finish at 23:00, and the
-end is skipped and reported as success. The tile dangles.
+Exactly right for a push, which is what it was written for. For a tile it
+means a print started at 21:00 and finished at 23:00 leaves its tile on screen,
+with the send reported as successful.
 
-**An end is not a notification. It is a resource release.** It has to bypass
-quiet hours, and so does the keepalive.
+The distinction that helped me: an end is not a notification, it is releasing
+something. Quiet hours should still silence the start and the alerts, and let
+the end and the keepalive through.
 
-There is a second version of this: `on_print_start` defaults to **False**
-(`models/notification.py:63`, mirrored at `AddNotificationModal.tsx:33`) while
-the completion events default True. The default configuration therefore
-produces ends with no starts. For this provider type the start event is not
-optional, and the UI should say so.
+There is a gentler version of the same thing worth knowing about:
+`on_print_start` defaults to **False** (`models/notification.py:63`, mirrored
+at `AddNotificationModal.tsx:33`) while the completion events default True.
+Sensible for notifications, but for this provider type it would produce ends
+with no starts, so the start event wants to be on by default here, or the UI
+wants to say why.
 
-### Wall 4: you must not write state from the send path
+### 4. The activity id needs somewhere to live
 
-Issue #2770 taught this codebase that a network call made while a caller holds
-a session can lock SQLite for the whole connect timeout. The docstrings at
-`notification_service.py:128-135` and `984-1016` spell it out.
+The obvious place is `provider.config`, and the docstrings at
+`notification_service.py:128-135` and `984-1016` talked me out of it: a
+network call made while a caller holds a session can hold the SQLite write
+lock for the whole connect timeout. That is a lesson already learned here and
+I did not want to undo it.
 
-So the obvious place to keep the activity id, `provider.config`, is exactly
-the thing not to touch there.
-
-The cheap correct route is a **new table**, which needs no hand-written
-migration because `Base.metadata.create_all` at `database.py:310` runs first
-on both dialects. Model it on `active_print_session.py`:
+A **new table** avoids the question entirely, and needs no hand-written
+migration because `Base.metadata.create_all` at `database.py:310` runs before
+`run_migrations` on both dialects. Modelled on `active_print_session.py`:
 
 ```python
 # backend/app/models/notification_live_activity.py  (new file)
@@ -207,18 +213,17 @@ class NotificationLiveActivity(Base):
 Then one import line in the `from backend.app.models import (...)` block
 inside `init_db()` at `database.py:253`.
 
-Adding columns to `notification_providers` instead is the expensive route: a
-dual-dialect entry in the hand-written `run_migrations` at `database.py:1242`,
-inside a 5,023 line file, plus a migration test to match the twenty that
-already exist. There is no Alembic here.
+Adding columns to `notification_providers` instead would mean a dual-dialect
+entry in `run_migrations` at `database.py:1242` plus a matching migration
+test, which is a lot more moving parts for the same result.
 
 ---
 
-## The gateway contract
+## What the Live Activity API taught me the hard way
 
-The whole API is at <https://getnotifyapp.com/apidocs/>. These are the parts
-that cost me time, offered so they cost you none. Every one of them was
-learned by getting it wrong against a real printer.
+The whole API is documented at <https://getnotifyapp.com/apidocs/> and is
+genuinely good. These are just the things I only understood after getting them
+wrong against a real printer, collected so they cost you nothing.
 
 - **`endsIn` is RELATIVE, in seconds.** Send it once and iOS counts down on
   the device. This is why the feature is cheap. It also means resending the
@@ -230,10 +235,11 @@ learned by getting it wrong against a real printer.
 - **`410` means seven different things.** `GET /live-activity/{id}` returns
   `endReason` as a clean field. `dismissed` and `dead-token` mean never
   recreate for this print. `overdue`, `abandoned` and `expired` mean recreate.
-  `never-started` means the gateway believes no tile appeared, and **you must
-  not recreate on it**: a tile iOS displays while the app is closed is never
-  reported back either, so the two are indistinguishable, and recreating puts
-  a second tile beside a live one.
+  `never-started` is the one that caught me: it means the gateway believes no
+  tile appeared, but a tile iOS displays while the app is closed is never
+  reported back either, so the two look identical from the server. I recreated
+  on it and got two tiles side by side on a real phone. Best treated as "leave
+  it alone".
 - **A tile outlives your memory of it.** Up to eight hours, whether or not you
   still hold its id. Persist the id, and end any old tile before starting a
   new one for the same printer. Ending is idempotent; not ending never is.
@@ -260,9 +266,9 @@ learned by getting it wrong against a real printer.
 
 ## What you get to delete
 
-Most of the reference implementation exists **only because it is outside**.
-Roughly half of its 1,900 line coordinator is inference that BambuBuddy does
-not need:
+This is the part that would make it fun to build. Most of my implementation
+exists **only because it is outside**, guessing at things you simply know.
+Roughly half of its 1,900 line coordinator would just evaporate:
 
 | Outside | Why | Inside BambuBuddy |
 |---|---|---|
@@ -274,44 +280,51 @@ not need:
 | `terminal_provisional` | An inferred outcome may be wrong | The outcome is known |
 | poll cadence, backoff, freshness gates | Polling | Event driven |
 
-Six of my last eight releases were lifecycle bugs caused by not knowing things
-your code knows for free.
+Six of my last eight releases were lifecycle bugs caused by inferring
+something your code already has sitting in a variable. Inside BambuBuddy, most
+of that difficulty is not solved so much as absent.
 
 ---
 
-## Honest sizing
+## How much work is it, roughly
 
-Two numbers, because conflating them is how this loses your trust on day two.
+Two numbers, because they are quite different jobs and I would rather you know
+that from me than find out on the second day.
 
-**The provider type**, matching the Bark commit: an afternoon. 22 files, ~271
-lines, of which 46 are the sender and 166 are tests. Ships working push
-notifications.
+**The provider type**, following the Bark commit exactly: an afternoon. Around
+270 lines, of which 46 are the sender and 166 are tests. On its own that ships
+Notify push notifications, which is a real feature, and it is where I would
+start if it were my repo.
 
-**The Live Activity behind it**: two to four focused days for someone fluent
-in this codebase. Roughly 700 to 1,200 lines of backend plus tests. A gateway
-client with typed error classification is ~250 to 350; the lifecycle state
-machine (persist, reconcile on restart, roll over at eight hours, keepalive,
-end exactly once) is ~250 to 400; the keepalive loop ~80.
+**The Live Activity behind it**: two to four focused days for someone who
+knows this codebase, which is to say considerably less for you than it was for
+me. Roughly 700 to 1,200 lines including tests. The gateway client with its
+error classification came to about 300, the lifecycle state machine about 350,
+the keepalive about 80.
 
-Add a day for the wiki PR and review.
-
-### Process, so a PR does not bounce on it
-
-Your `CONTRIBUTING.md` is explicit and easy to miss from outside:
-
-- **No assigned issue, no PR.** Open an issue and get it assigned first.
-- A **companion PR in `maziggy/bambuddy-wiki`** is mandatory for a new feature
-  and for a new config key.
-- The `static/` bundle is rebuilt as part of the commit, not hand-edited.
-- All 13 locale files, plus the parity script's brand alternation.
+If any of that sounds like more than it is worth, **option A is a genuinely
+good outcome on its own.** Four fields, twenty minutes, and the add-on stops
+guessing. I would be glad of that and would not raise it again.
 
 ---
 
-## Contact
+## If it would help
 
-Open an issue on <https://github.com/simplytoast1/notify-bambuddy>, or comment
-on any BambuBuddy issue that references it.
+I am happy to do the work rather than describe it, for either option, in
+whatever form suits you: a PR against `bambuddy`, a branch to look at, or just
+answering questions while you write it yourself. I will follow your process,
+open an issue and wait for it to be assigned first, and do the wiki PR
+alongside.
 
-Happy to send the PR rather than just describing it, for either option. Both
-projects are AGPL-3.0, so anything here can be lifted directly with no licence
-question to resolve.
+If you would rather not take a dependency on Notify specifically, the same
+shape works for any Live Activity provider. The lifecycle is the hard part and
+it is provider agnostic.
+
+Both projects are AGPL-3.0, so anything here can be lifted directly, with or
+without me.
+
+**Reference implementation:** <https://github.com/simplytoast1/notify-bambuddy>
+
+Thanks for BambuBuddy. The reason this add-on exists at all is that the API
+was good enough to build on without asking anyone's permission, which is not
+the normal experience.
