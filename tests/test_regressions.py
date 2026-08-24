@@ -1448,3 +1448,82 @@ def test_recovery_does_not_recreate_a_never_started_tile(clock):
 
     assert store.is_dismissed(SERIAL), \
         "recovery did not suppress a never-started tile the way runtime does"
+
+
+# ---------------------------------------------------------------------------
+# A print that loses its tile mid-flight gets another one
+# ---------------------------------------------------------------------------
+
+
+def test_a_live_print_that_loses_its_tile_gets_another(clock):
+    """Regression, seen on a real print sitting at 49%.
+
+    When the gateway reaps a tile as never-started, this service declines to
+    replace it immediately, because a tile iOS displayed but never reported is
+    indistinguishable from one that never arrived, and replacing produced two
+    tiles side by side.
+
+    But the session was then left resident, non-terminal and tileless for the
+    rest of the print. Resident, it blocks the creation path; not silent, it is
+    never retired. So the print ran to completion with nothing on screen while
+    the old tile sat frozen on the phone.
+
+    Trying again is safe now because `_start_tile` sweeps the device first, so
+    a replacement cannot sit beside a tile that did arrive.
+    """
+    from notify_bambuddy.notify_client import NotifyGone
+
+    coord, notify, _ = build()
+    run(coord.handle(status(clock)))
+    first = notify.started[0]["activityId"]
+
+    # The gateway reaps it as never-started, which the next update discovers.
+    notify.states[first] = ActivityStatus(
+        activity_id=first, state="ended", end_reason="never-started",
+        expires_at=None, raw={"activityId": first, "endReason": "never-started"},
+    )
+    notify.fail_next("update", NotifyGone("This Live Activity has ended", 410))
+    clock.advance(60)
+    run(coord.handle(status(clock, progress=40.0)))
+
+    session = coord._sessions[SERIAL]
+    assert session.activity_id is None, "precondition: the tile was dropped"
+    assert session.phase is not Phase.TERMINAL, "precondition: the print is still running"
+
+    # The next reading must put a tile back.
+    clock.advance(30)
+    run(coord.handle(status(clock, progress=45.0)))
+
+    assert len(notify.started) == 2, "a live print was left with no tile"
+    assert coord._sessions[SERIAL].activity_id is not None
+
+
+def test_a_print_is_not_given_tiles_forever(clock):
+    """The bound on the above. A gateway removing every tile would otherwise
+    have a new one started for it on every reading, and each attempt is a start
+    the device's own throttle counts against a budget only the user can
+    replenish."""
+    from notify_bambuddy.notify_client import NotifyGone
+
+    coord, notify, _ = build()
+    run(coord.handle(status(clock)))
+
+    for i in range(6):
+        session = coord._sessions.get(SERIAL)
+        if session is None or session.activity_id is None:
+            clock.advance(30)
+            run(coord.handle(status(clock, progress=20.0 + i)))
+            continue
+        current = session.activity_id
+        notify.states[current] = ActivityStatus(
+            activity_id=current, state="ended", end_reason="never-started",
+            expires_at=None, raw={"activityId": current, "endReason": "never-started"},
+        )
+        notify.fail_next("update", NotifyGone("This Live Activity has ended", 410))
+        clock.advance(30)
+        run(coord.handle(status(clock, progress=20.0 + i)))
+
+    assert len(notify.started) <= coordinator_module.MAX_TILE_ATTEMPTS, (
+        f"started {len(notify.started)} tiles for one print; the cap is "
+        f"{coordinator_module.MAX_TILE_ATTEMPTS}"
+    )

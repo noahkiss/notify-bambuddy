@@ -84,6 +84,13 @@ from .store import Store
 
 log = logging.getLogger(__name__)
 
+#: How many tiles ONE print may be given before this service stops trying.
+#: Reached only when something keeps removing them: a gateway reaping every
+#: start as never-started, or a user swiping each replacement away. Two is
+#: enough to survive one bad tile and low enough that a pathological loop
+#: costs the device's start budget twice rather than for the whole print.
+MAX_TILE_ATTEMPTS = 2
+
 #: How long a printer must keep reporting an inactive state (FINISH/FAILED/
 #: IDLE) before its session is closed. Nothing announces the end of a print,
 #: so this is how one is recognised. Long enough that a single odd reading
@@ -163,6 +170,11 @@ class Coordinator:
         #: Consecutive started tiles that never became visible. Drives the
         #: escalating start backoff; reset when any tile is confirmed.
         self._unconfirmed_starts: int = 0
+
+        #: Tiles the gateway has reaped as never-started this run. Two is no
+        #: longer coincidence, it is an unopened app, and that needs saying
+        #: loudly because no amount of retrying will help.
+        self._never_started_reaps: int = 0
 
         #: Tiles whose end could not be delivered, keyed by activity id.
         #: SEPARATE from `_sessions` on purpose: that is keyed by serial and
@@ -402,6 +414,35 @@ class Coordinator:
         if session is None:
             await self._maybe_create_from_status(status, now)
             return
+
+        # A LIVE PRINT WITH NO TILE. Reached when a tile was removed out from
+        # under this service mid-print, most often a gateway reap the service
+        # deliberately declines to replace immediately.
+        #
+        # Left alone, that session is resident, non-terminal and tileless for
+        # the rest of the print. Being resident it blocks the creation path,
+        # and being non-silent it is never retired, so the print runs to
+        # completion with nothing on screen and the last tile frozen wherever
+        # it stopped. Observed on a real print sitting at 49% with fresh
+        # telemetry arriving every second.
+        #
+        # Trying again is safe now in a way it was not when that reap was
+        # first handled: `_start_tile` sweeps the device first and ends any
+        # unowned tile for this printer, so a replacement cannot sit beside a
+        # tile that did reach the phone. `MAX_TILE_ATTEMPTS` bounds it, so a
+        # gateway reaping everything costs two starts rather than a print's
+        # worth.
+        if (session.activity_id is None
+                and session.phase is not Phase.TERMINAL
+                and session.delivery is Delivery.ENDED
+                and status.state in ACTIVE_STATES
+                and session.tile_attempts < MAX_TILE_ATTEMPTS):
+            log.info(
+                "%s is still printing with no tile (attempt %d of %d); creating another",
+                serial, session.tile_attempts + 1, MAX_TILE_ATTEMPTS,
+            )
+            session.delivery = Delivery.PENDING
+            await self._start_tile(session, now)
 
         if session.phase is Phase.TERMINAL:
             # Terminal-sticky, with ONE exception. A terminal marked
@@ -1034,6 +1075,7 @@ class Coordinator:
     def _adopt(self, session: SessionState, activity_id: str, expires_at: Optional[str],
                now: float, content: dict) -> None:
         """Bind a tile to a session, whether freshly started or found orphaned."""
+        session.tile_attempts += 1
         session.activity_id = activity_id
         session.expires_at = parse_timestamp(expires_at)
         session.delivery = Delivery.ACTIVE
@@ -1427,12 +1469,31 @@ class Coordinator:
             # really never appeared, a replacement would hit exactly the same
             # wall; if it did appear, a replacement duplicates it. Either way
             # the session keeps running and the next PRINT gets a fresh tile.
-            log.info(
-                "Notify reaped the tile for %s as never-started. Not replacing it: if it "
-                "did reach your phone, a replacement would sit alongside it. Open the "
-                "Notify app once so the app can confirm tiles it receives.",
-                session.serial,
-            )
+            # Counted per device, because a SECOND one is no longer bad luck.
+            # The gateway reaps a tile it has not seen confirmed after about
+            # fifteen minutes, and only the Notify app confirms, and only while
+            # it is open. So a device whose app is never opened loses every
+            # tile on a timer, and each loss drives the gateway's own refusal
+            # window up: minutes, then hours. Nothing here can fix that, and
+            # saying so once quietly is not enough.
+            self._never_started_reaps += 1
+            if self._never_started_reaps >= 2:
+                log.error(
+                    "Notify has now reaped %d tiles for this device as never-started. "
+                    "This is what happens when the Notify app has not been opened: it "
+                    "confirms tiles only while it is open, the gateway gives up on an "
+                    "unconfirmed tile after about fifteen minutes, and each one pushes "
+                    "its refusal window higher. OPEN THE NOTIFY APP ONCE ON THE DEVICE. "
+                    "Nothing this service does can substitute for that.",
+                    self._never_started_reaps,
+                )
+            else:
+                log.info(
+                    "Notify reaped the tile for %s as never-started. Not replacing it "
+                    "immediately: if it did reach your phone, a replacement would sit "
+                    "alongside it. Open the Notify app once so it can confirm tiles.",
+                    session.serial,
+                )
             session.delivery = Delivery.ENDED
             session.activity_id = None
             self._store.save_session(session)

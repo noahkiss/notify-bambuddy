@@ -440,6 +440,12 @@ class SessionState:
     #: process died mid-start and the gateway may hold a tile nobody owns, so
     #: recovery reconciles instead of starting another. PERSISTED: this is the
     #: whole point of it.
+    #: How many tiles this ONE print has been given. Bounds the recreate
+    #: loop: a gateway that reaps every tile as never-started would otherwise
+    #: have a new one started for it forever, and every attempt is a start the
+    #: device's own throttle counts.
+    tile_attempts: int = 0
+
     start_ambiguous: bool = False
 
     #: Epoch seconds of the last status frame, for silence detection.

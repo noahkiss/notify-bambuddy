@@ -3,6 +3,40 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.3.3
+
+### Fixed
+
+- **A print whose tile was reaped as never-started now gets another tile.**
+  Since 0.2.2 this service declined to replace such a tile, because the gateway
+  cannot distinguish a tile iOS never displayed from one it displayed while the
+  app was closed, and replacing a tile that had in fact arrived produced two
+  side by side.
+
+  Declining was right. Leaving the session there was not. It stayed resident
+  and non-terminal, which blocked the creation path, and its telemetry stayed
+  fresh, which meant the silence sweep never retired it. The print then ran to
+  completion with nothing on screen, while the tile already on the phone kept
+  counting down on its own, because `endsIn` is relative and iOS ticks it
+  locally with no further contact.
+
+  A live print with no tile is now given another one on the next reading.
+  Replacing is safe here because `_start_tile` already sweeps the device before
+  every start, so a replacement cannot end up beside a tile that did arrive.
+  Bounded at two per print by `MAX_TILE_ATTEMPTS`, tracked in the new
+  `tile_attempts` column, because each start is spent against a device throttle
+  only the phone's owner can replenish.
+
+- **Repeated never-started reaps now say what actually needs doing.** Losing
+  one tile is bad luck. Losing every tile is an unopened app, and the two
+  needed different messages, because no amount of retrying fixes the second.
+
+  The Notify app confirms tiles only while it is open. The gateway gives up on
+  an unconfirmed tile after roughly fifteen minutes and counts it as a failed
+  delivery, and its own refusal window climbs with each one: minutes, then
+  hours. From the second reap onward this is logged at ERROR with the only
+  remedy there is, which is to open the app once on the device.
+
 ## 0.3.2
 
 ### Documentation
