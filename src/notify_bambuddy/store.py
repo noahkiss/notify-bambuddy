@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     outcome_inferred      INTEGER NOT NULL DEFAULT 0,
     terminal_provisional  INTEGER NOT NULL DEFAULT 0,
     end_keep_for          INTEGER NOT NULL DEFAULT 0,
-    tile_attempts         INTEGER NOT NULL DEFAULT 0
+    recreate_attempts         INTEGER NOT NULL DEFAULT 0
 );
 
 -- One index, on the lookup the coordinator does constantly: "is there an open
@@ -179,7 +179,7 @@ class Store:
             ("outcome_inferred", "INTEGER NOT NULL DEFAULT 0"),
             ("terminal_provisional", "INTEGER NOT NULL DEFAULT 0"),
             ("end_keep_for", "INTEGER NOT NULL DEFAULT 0"),
-            ("tile_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("recreate_attempts", "INTEGER NOT NULL DEFAULT 0"),
         ),
         # Nullable with no default: an existing dismissal genuinely does not
         # know which print it belonged to, and NULL says so honestly. The
@@ -245,7 +245,7 @@ class Store:
                 progress_trustworthy, progress_at_detection, last_status_ts, updated_at,
                 start_ambiguous, alert_sent, outcome_inferred, terminal_provisional,
                 end_keep_for,
-                tile_attempts
+                recreate_attempts
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(session_key) DO UPDATE SET
                 printer_name=excluded.printer_name,
@@ -273,7 +273,7 @@ class Store:
                 outcome_inferred=excluded.outcome_inferred,
                 terminal_provisional=excluded.terminal_provisional,
                 end_keep_for=excluded.end_keep_for,
-                tile_attempts=excluded.tile_attempts
+                recreate_attempts=excluded.recreate_attempts
             """,
             (
                 session.session_key,
@@ -304,7 +304,7 @@ class Store:
                 1 if session.outcome_inferred else 0,
                 1 if session.terminal_provisional else 0,
                 session.end_keep_for,
-                session.tile_attempts,
+                session.recreate_attempts,
             ),
         )
         self._db.commit()
@@ -366,7 +366,7 @@ class Store:
             outcome_inferred=bool(row["outcome_inferred"]),
             terminal_provisional=bool(row["terminal_provisional"]),
             end_keep_for=row["end_keep_for"],
-            tile_attempts=row["tile_attempts"],
+            recreate_attempts=row["recreate_attempts"],
         )
 
     # --- Dismissals --------------------------------------------------------

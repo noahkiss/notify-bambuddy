@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import os
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 #: The commit this build came from, stamped into the image at build time.
 #: "unknown" when running from a checkout rather than a published image.

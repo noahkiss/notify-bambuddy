@@ -84,12 +84,24 @@ from .store import Store
 
 log = logging.getLogger(__name__)
 
-#: How many tiles ONE print may be given before this service stops trying.
-#: Reached only when something keeps removing them: a gateway reaping every
-#: start as never-started, or a user swiping each replacement away. Two is
-#: enough to survive one bad tile and low enough that a pathological loop
-#: costs the device's start budget twice rather than for the whole print.
-MAX_TILE_ATTEMPTS = 2
+#: How many REPLACEMENT tiles one print may be given after losing one.
+#: Counts only replacements, never the first start and never an eight-hour
+#: rollover, both of which are the tile working correctly. Counting those spent
+#: the budget before anything went wrong and disarmed the replacement on prints
+#: longer than the rollover window, which are the ones that most need it.
+#: Two, because each replacement is drawn against a per-device push-to-start
+#: budget only the phone's owner can replenish, and a device that has eaten two
+#: replacements is not going to be fixed by a third.
+MAX_RECREATE_ATTEMPTS = 2
+
+#: The one tile loss that tells us NOTHING about what is on the Lock Screen.
+#: Notify reaps a tile it has not seen confirmed after about fifteen minutes,
+#: and only the Notify app confirms, and only while it is open. So this reason
+#: covers both "iOS never showed it" and "iOS showed it and the app was shut",
+#: and the gateway cannot tell them apart either. Every OTHER loss reason is
+#: the gateway stating it no longer holds the tile, which does clear the
+#: screen. See `_should_recreate_tile`.
+TILE_LOSS_AMBIGUOUS = "never-started"
 
 #: How long a printer must keep reporting an inactive state (FINISH/FAILED/
 #: IDLE) before its session is closed. Nothing announces the end of a print,
@@ -176,6 +188,18 @@ class Coordinator:
         #: loudly because no amount of retrying will help.
         self._never_started_reaps: int = 0
 
+        #: True once ANY tile has been confirmed by the Notify app on this
+        #: device. That is what makes non-confirmation informative: on a device
+        #: that confirms, a tile which went unconfirmed really did not arrive,
+        #: so replacing it cannot duplicate anything. See
+        #: `_should_recreate_tile`.
+        #:
+        #: Starts False every run and is never persisted, so a restart is
+        #: cautious until it sees a confirmation. That is the safe direction:
+        #: the cost of being wrong here is a second tile on the Lock Screen
+        #: that nothing can remove.
+        self._device_confirms_tiles: bool = False
+
         #: Tiles whose end could not be delivered, keyed by activity id.
         #: SEPARATE from `_sessions` on purpose: that is keyed by serial and
         #: holds one session per printer, so a supersede or a new print
@@ -246,6 +270,7 @@ class Coordinator:
                     log.info("Printer %s had no tile; waiting for fresh telemetry",
                              session.serial)
                     session.delivery = Delivery.ENDED
+                    session.tile_loss = "no tile at startup"
                     self._store.save_session(session)
             return
 
@@ -284,6 +309,7 @@ class Coordinator:
                     session.serial,
                 )
                 session.delivery = Delivery.ENDED
+                session.tile_loss = "no tile at startup"
                 self._store.save_session(session)
                 continue
 
@@ -415,35 +441,6 @@ class Coordinator:
             await self._maybe_create_from_status(status, now)
             return
 
-        # A LIVE PRINT WITH NO TILE. Reached when a tile was removed out from
-        # under this service mid-print, most often a gateway reap the service
-        # deliberately declines to replace immediately.
-        #
-        # Left alone, that session is resident, non-terminal and tileless for
-        # the rest of the print. Being resident it blocks the creation path,
-        # and being non-silent it is never retired, so the print runs to
-        # completion with nothing on screen and the last tile frozen wherever
-        # it stopped. Observed on a real print sitting at 49% with fresh
-        # telemetry arriving every second.
-        #
-        # Trying again is safe now in a way it was not when that reap was
-        # first handled: `_start_tile` sweeps the device first and ends any
-        # unowned tile for this printer, so a replacement cannot sit beside a
-        # tile that did reach the phone. `MAX_TILE_ATTEMPTS` bounds it, so a
-        # gateway reaping everything costs two starts rather than a print's
-        # worth.
-        if (session.activity_id is None
-                and session.phase is not Phase.TERMINAL
-                and session.delivery is Delivery.ENDED
-                and status.state in ACTIVE_STATES
-                and session.tile_attempts < MAX_TILE_ATTEMPTS):
-            log.info(
-                "%s is still printing with no tile (attempt %d of %d); creating another",
-                serial, session.tile_attempts + 1, MAX_TILE_ATTEMPTS,
-            )
-            session.delivery = Delivery.PENDING
-            await self._start_tile(session, now)
-
         if session.phase is Phase.TERMINAL:
             # Terminal-sticky, with ONE exception. A terminal marked
             # provisional is a failure BambuBuddy reported while the printer
@@ -499,6 +496,36 @@ class Coordinator:
         await self._advance_phase(session, status, now)
         if session.delivery is Delivery.DISMISSED:
             return
+
+        # A LIVE PRINT WITH NO TILE. Reached when a tile went away underneath
+        # this service mid-print, which several paths can do: the gateway
+        # dropping it, recovery finding none, or a reap.
+        #
+        # Left alone, such a session is resident, non-terminal and tileless for
+        # the rest of the print. Resident, it blocks the creation path; not
+        # silent, the inactive sweep never retires it. So the print runs to
+        # completion with nothing on screen while the last tile sits frozen
+        # wherever it stopped, still counting down, because `endsIn` is
+        # relative and iOS ticks it with no further contact. Seen on a real
+        # print at 49% with telemetry arriving every second.
+        #
+        # DELIBERATELY placed here rather than earlier in this method. The
+        # replacement is built from the session, so it has to be built from a
+        # session this frame has already been applied to, or the new tile is
+        # born showing the previous reading and the progress floor suppresses
+        # the correction. Being after `_detect_new_print` also stops a tile
+        # being created and superseded inside one frame.
+        if self._should_recreate_tile(session, status):
+            session.recreate_attempts += 1
+            log.info(
+                "%s is still printing with no tile (%s); creating another, %d of %d",
+                serial, session.tile_loss or "reason unrecorded",
+                session.recreate_attempts, MAX_RECREATE_ATTEMPTS,
+            )
+            session.delivery = Delivery.PENDING
+            await self._start_tile(session, now)
+            return
+
         await self._maybe_send(session, now)
 
     def _open_session(self, serial: str, now: float, *,
@@ -1072,10 +1099,63 @@ class Coordinator:
         self._adopt(session, started.activity_id, started.expires_at, now, content)
         log.info("Started tile %s for %s", started.activity_id, session.serial)
 
+    def _should_recreate_tile(self, session: SessionState, status: PrinterStatus) -> bool:
+        """Whether a live print that has lost its tile should be given another.
+
+        The whole difficulty is that "the tile is gone" and "the screen is
+        clear" are not the same statement, and only some losses make both.
+
+        When the gateway says it no longer holds the tile, or recovery finds
+        none, the Lock Screen really is clear and a replacement is plainly
+        right. When the gateway REAPS a tile as never-started it has said
+        nothing of the kind: that reason covers a tile iOS never displayed and
+        a tile iOS displayed while the Notify app was closed, which is the only
+        state in which a tile goes unconfirmed. Replacing in the second case
+        puts two tiles for one printer on the Lock Screen.
+
+        An earlier version of this claimed the pre-start sweep made that safe.
+        It does not. `_reap_stale_tiles` builds its candidates from
+        `list_device`, which returns only LIVE tiles, and a reaped tile is by
+        definition already ended in the gateway's own records. It can never
+        appear in that list, so the sweep cannot clear it. There is no request
+        that removes it either. Nothing here can take that tile off the screen.
+
+        So for that one reason, and only that one, this asks a different
+        question: does this device confirm tiles at all? If it does, then a
+        tile that went unconfirmed really was not delivered, and replacing is
+        safe. If nothing has ever been confirmed, non-confirmation carries no
+        information, and the honest answer is to leave the screen alone and
+        tell the user to open the app, which is the only thing that fixes it.
+        """
+        if session.activity_id is not None:
+            return False
+        if session.phase is Phase.TERMINAL:
+            return False
+        if session.delivery is not Delivery.ENDED:
+            return False
+        # Only for a printer that is actually printing. A tile for an idle or
+        # finished machine is exactly what the inactive sweep is retiring.
+        if status.state not in ACTIVE_STATES:
+            return False
+        if session.recreate_attempts >= MAX_RECREATE_ATTEMPTS:
+            return False
+        # Ended deliberately from outside. Putting it back would be arguing
+        # with whoever ended it.
+        if session.tile_loss == "script":
+            return False
+        if session.tile_loss == TILE_LOSS_AMBIGUOUS and not self._device_confirms_tiles:
+            return False
+        return True
+
     def _adopt(self, session: SessionState, activity_id: str, expires_at: Optional[str],
                now: float, content: dict) -> None:
         """Bind a tile to a session, whether freshly started or found orphaned."""
-        session.tile_attempts += 1
+        # NOTE: deliberately does NOT count against MAX_RECREATE_ATTEMPTS.
+        # This is the bind point for every tile a session ever gets, including
+        # the first start and each rollover, and charging those to the
+        # replacement budget exhausted it before anything had gone wrong.
+        # The replacement site does its own counting.
+        session.tile_loss = ""
         session.activity_id = activity_id
         session.expires_at = parse_timestamp(expires_at)
         session.delivery = Delivery.ACTIVE
@@ -1369,6 +1449,7 @@ class Coordinator:
                         session.activity_id, session.serial)
             session.activity_id = None
             session.delivery = Delivery.ENDED
+            session.tile_loss = "dropped"
             self._store.save_session(session)
             return
         except NotifyTransportError as exc:
@@ -1455,6 +1536,7 @@ class Coordinator:
         if reason == "script":
             session.delivery = Delivery.ENDED
             session.activity_id = None
+            session.tile_loss = "script"
             self._store.save_session(session)
             return
 
@@ -1467,7 +1549,13 @@ class Coordinator:
             #
             # So this is the one reap that must not be retried. If the tile
             # really never appeared, a replacement would hit exactly the same
-            # wall; if it did appear, a replacement duplicates it. Either way
+            # wall; if it did appear, a replacement duplicates it, and NOTHING
+            # can take it off the screen: the pre-start sweep reads
+            # `list_device`, which lists only LIVE tiles, and a reaped tile is
+            # already ended in the gateway's records. `_should_recreate_tile`
+            # therefore replaces this one only on a device that has proved it
+            # confirms tiles, which is what makes non-confirmation mean
+            # something. Either way
             # the session keeps running and the next PRINT gets a fresh tile.
             # Counted per device, because a SECOND one is no longer bad luck.
             # The gateway reaps a tile it has not seen confirmed after about
@@ -1489,13 +1577,16 @@ class Coordinator:
                 )
             else:
                 log.info(
-                    "Notify reaped the tile for %s as never-started. Not replacing it "
-                    "immediately: if it did reach your phone, a replacement would sit "
-                    "alongside it. Open the Notify app once so it can confirm tiles.",
+                    "Notify reaped the tile for %s as never-started. Whether it is on "
+                    "your Lock Screen or was never delivered, nothing here can tell, "
+                    "and nothing here can remove it. Open the Notify app once so it can "
+                    "confirm tiles; a device that confirms gets replacements "
+                    "automatically.",
                     session.serial,
                 )
             session.delivery = Delivery.ENDED
             session.activity_id = None
+            session.tile_loss = TILE_LOSS_AMBIGUOUS
             self._store.save_session(session)
             return
 
@@ -1847,6 +1938,10 @@ class Coordinator:
                 # The device is receiving tiles. Whatever trouble there was is
                 # over, so the escalation starts from scratch next time.
                 self._unconfirmed_starts = 0
+                # And, separately, this device has now PROVED it confirms. From
+                # here on a tile that goes unconfirmed is real evidence it was
+                # not delivered, which is what makes replacing one safe.
+                self._device_confirms_tiles = True
                 continue
 
             if state.state != "starting":

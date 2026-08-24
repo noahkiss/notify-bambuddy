@@ -440,13 +440,25 @@ class SessionState:
     #: process died mid-start and the gateway may hold a tile nobody owns, so
     #: recovery reconciles instead of starting another. PERSISTED: this is the
     #: whole point of it.
-    #: How many tiles this ONE print has been given. Bounds the recreate
-    #: loop: a gateway that reaps every tile as never-started would otherwise
-    #: have a new one started for it forever, and every attempt is a start the
-    #: device's own throttle counts.
-    tile_attempts: int = 0
-
     start_ambiguous: bool = False
+
+    #: How many REPLACEMENT tiles this print has been given after losing one.
+    #: Deliberately NOT a count of every tile bound: the first start and an
+    #: eight-hour rollover are the tile working as intended, and counting them
+    #: would spend this budget before anything had gone wrong, disarming the
+    #: replacement on exactly the long prints that need it most.
+    recreate_attempts: int = 0
+
+    #: WHY this session currently has no tile, or "" when it has one. Decides
+    #: whether a replacement is safe, which varies by cause: a gateway that
+    #: says it no longer holds the tile has told us the screen is clear, while
+    #: a never-started reap has told us nothing (see `TILE_LOSS_AMBIGUOUS`).
+    #:
+    #: NOT PERSISTED, and does not need to be. It matters only between losing
+    #: a tile and the next reading seconds later. A restart in between goes
+    #: through recovery, which reconciles against the gateway's own list and
+    #: sets this itself.
+    tile_loss: str = ""
 
     #: Epoch seconds of the last status frame, for silence detection.
     last_status_ts: float = 0.0

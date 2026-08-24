@@ -1451,46 +1451,42 @@ def test_recovery_does_not_recreate_a_never_started_tile(clock):
 
 
 # ---------------------------------------------------------------------------
-# A print that loses its tile mid-flight gets another one
+# A print that loses its tile mid-flight
 # ---------------------------------------------------------------------------
 
 
-def test_a_live_print_that_loses_its_tile_gets_another(clock):
+def _reap(notify, activity_id, reason):
+    """Make the gateway report `activity_id` as ended, the way a reap looks."""
+    from notify_bambuddy.notify_client import NotifyGone
+    notify.states[activity_id] = ActivityStatus(
+        activity_id=activity_id, state="ended", end_reason=reason,
+        expires_at=None, raw={"activityId": activity_id, "endReason": reason},
+    )
+    notify.fail_next("update", NotifyGone("This Live Activity has ended", 410))
+
+
+def test_a_live_print_whose_tile_the_gateway_dropped_gets_another(clock):
     """Regression, seen on a real print sitting at 49%.
 
-    When the gateway reaps a tile as never-started, this service declines to
-    replace it immediately, because a tile iOS displayed but never reported is
-    indistinguishable from one that never arrived, and replacing produced two
-    tiles side by side.
-
-    But the session was then left resident, non-terminal and tileless for the
-    rest of the print. Resident, it blocks the creation path; not silent, it is
-    never retired. So the print ran to completion with nothing on screen while
-    the old tile sat frozen on the phone.
-
-    Trying again is safe now because `_start_tile` sweeps the device first, so
-    a replacement cannot sit beside a tile that did arrive.
+    A session that loses its tile mid-print was left resident, non-terminal and
+    tileless for the rest of the run. Resident it blocks the creation path, and
+    with fresh telemetry the inactive sweep never retires it, so the print
+    finished with nothing on screen while the dead tile kept counting down by
+    itself.
     """
-    from notify_bambuddy.notify_client import NotifyGone
-
     coord, notify, _ = build()
+    coord._device_confirms_tiles = True
     run(coord.handle(status(clock)))
     first = notify.started[0]["activityId"]
 
-    # The gateway reaps it as never-started, which the next update discovers.
-    notify.states[first] = ActivityStatus(
-        activity_id=first, state="ended", end_reason="never-started",
-        expires_at=None, raw={"activityId": first, "endReason": "never-started"},
-    )
-    notify.fail_next("update", NotifyGone("This Live Activity has ended", 410))
+    _reap(notify, first, "never-started")
     clock.advance(60)
     run(coord.handle(status(clock, progress=40.0)))
 
     session = coord._sessions[SERIAL]
     assert session.activity_id is None, "precondition: the tile was dropped"
-    assert session.phase is not Phase.TERMINAL, "precondition: the print is still running"
+    assert session.phase is not Phase.TERMINAL, "precondition: still printing"
 
-    # The next reading must put a tile back.
     clock.advance(30)
     run(coord.handle(status(clock, progress=45.0)))
 
@@ -1498,32 +1494,75 @@ def test_a_live_print_that_loses_its_tile_gets_another(clock):
     assert coord._sessions[SERIAL].activity_id is not None
 
 
-def test_a_print_is_not_given_tiles_forever(clock):
-    """The bound on the above. A gateway removing every tile would otherwise
-    have a new one started for it on every reading, and each attempt is a start
-    the device's own throttle counts against a budget only the user can
-    replenish."""
-    from notify_bambuddy.notify_client import NotifyGone
+def test_a_never_started_reap_is_not_replaced_on_a_device_that_never_confirms(clock):
+    """The safety property the whole feature rests on.
 
+    A never-started reap means the gateway gave up waiting for the Notify app
+    to confirm. It does NOT mean the screen is clear: the app confirms only
+    while it is open, so a tile iOS is displaying right now is reaped
+    identically to one that never arrived.
+
+    Nothing can remove that tile. The pre-start sweep reads `list_device`,
+    which lists only LIVE tiles, and a reaped tile is already ended in the
+    gateway's records, so it is never a candidate. Replacing it therefore puts
+    two tiles for one printer on the Lock Screen, permanently.
+
+    So on a device that has never confirmed anything, this must NOT replace.
+    """
     coord, notify, _ = build()
+    coord._device_confirms_tiles = False
+    run(coord.handle(status(clock)))
+    first = notify.started[0]["activityId"]
+
+    _reap(notify, first, "never-started")
+    clock.advance(60)
+    run(coord.handle(status(clock, progress=40.0)))
+
+    for i in range(5):
+        clock.advance(30)
+        run(coord.handle(status(clock, progress=45.0 + i)))
+
+    assert len(notify.started) == 1, (
+        "replaced an ambiguously-reaped tile on a device that has never "
+        "confirmed one; the original may still be on the Lock Screen and "
+        "nothing can remove it"
+    )
+
+
+def test_a_rollover_does_not_spend_the_replacement_budget(clock):
+    """The budget counts replacements, not tiles.
+
+    Incrementing on every bind meant an ordinary eight-hour rollover consumed
+    the allowance before anything had gone wrong, so the replacement above was
+    dead on exactly the long prints that most need it.
+    """
+    coord, notify, _ = build()
+    coord._device_confirms_tiles = True
+    run(coord.handle(status(clock)))
+
+    session = coord._sessions[SERIAL]
+    assert session.recreate_attempts == 0, "a first start is not a replacement"
+
+    coord._adopt(session, "LA-ROLLED", None, clock.time(), {})
+    assert session.recreate_attempts == 0, "a rollover is not a replacement"
+
+
+def test_a_print_is_not_given_replacement_tiles_forever(clock):
+    """The bound. Each replacement is spent against a per-device push-to-start
+    budget only the phone's owner can replenish, so a gateway removing every
+    tile must not be answered on every reading."""
+    coord, notify, _ = build()
+    coord._device_confirms_tiles = True
     run(coord.handle(status(clock)))
 
     for i in range(6):
         session = coord._sessions.get(SERIAL)
-        if session is None or session.activity_id is None:
-            clock.advance(30)
-            run(coord.handle(status(clock, progress=20.0 + i)))
-            continue
-        current = session.activity_id
-        notify.states[current] = ActivityStatus(
-            activity_id=current, state="ended", end_reason="never-started",
-            expires_at=None, raw={"activityId": current, "endReason": "never-started"},
-        )
-        notify.fail_next("update", NotifyGone("This Live Activity has ended", 410))
+        if session is not None and session.activity_id is not None:
+            _reap(notify, session.activity_id, "never-started")
         clock.advance(30)
         run(coord.handle(status(clock, progress=20.0 + i)))
 
-    assert len(notify.started) <= coordinator_module.MAX_TILE_ATTEMPTS, (
-        f"started {len(notify.started)} tiles for one print; the cap is "
-        f"{coordinator_module.MAX_TILE_ATTEMPTS}"
+    assert len(notify.started) <= 1 + coordinator_module.MAX_RECREATE_ATTEMPTS, (
+        f"started {len(notify.started)} tiles for one print; the cap is one "
+        f"start plus {coordinator_module.MAX_RECREATE_ATTEMPTS} replacements"
     )

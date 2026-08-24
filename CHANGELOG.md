@@ -3,6 +3,62 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.3.4
+
+**Use this instead of 0.3.3.** That release rested on a safety property that
+does not exist, and on a device whose Notify app stays closed it would have put
+a second tile on the Lock Screen beside the frozen one.
+
+### Fixed
+
+- **A replacement tile is no longer created on evidence that cannot support
+  it.** 0.3.3 replaced a tile the gateway had reaped as never-started, on the
+  stated grounds that the pre-start sweep would first remove any tile that had
+  actually arrived. It cannot. `_reap_stale_tiles` draws its candidates from
+  `list_device`, which returns only LIVE tiles, and a reaped tile is by
+  definition already ended in the gateway's own records. It can never appear
+  there, and no request removes it. That claim was in the code comment, the
+  commit message and this changelog, and it was wrong in all three.
+
+  A never-started reap means the Notify app did not confirm the tile within
+  about fifteen minutes. The app confirms only while it is open, so that
+  covers both "iOS never displayed it" and "iOS is displaying it right now
+  with the app shut", and the gateway cannot separate them either.
+
+  So the question asked is now a different one: does this device confirm tiles
+  at all? On a device that has confirmed at least one, a tile that went
+  unconfirmed genuinely was not delivered and replacing it is safe. On a
+  device that has never confirmed anything, non-confirmation says nothing, and
+  the service leaves the screen alone and says so. Every other loss reason,
+  where the gateway states it no longer holds the tile, is unambiguous and
+  replaces as before.
+
+- **An eight-hour rollover no longer spends the replacement budget.** The
+  counter added in 0.3.3 was incremented in `_adopt`, the bind point for every
+  tile a session is ever given, including the first start and each rollover.
+  With a cap of two, any print crossing the rollover window had spent the
+  allowance before anything went wrong, so the replacement was disabled on
+  exactly the long prints that most need it. It now counts replacements only,
+  and is named `recreate_attempts` to match.
+
+- **A replacement tile is built from the current reading.** The branch ran
+  before the frame was applied, so a tile replaced at 75% was born showing the
+  previous reading's 40% and a stale countdown, which the progress floor then
+  suppressed the correction to. Running it before new-print detection could
+  also create a tile and supersede it inside one frame. It now runs after both.
+
+- **`start_ambiguous` has its documentation back.** The 0.3.3 field was
+  inserted between that comment and the field it describes.
+
+### Notes
+
+- Verified by upgrading a real 0.3.2 database: all 28 columns round-trip, the
+  new column defaults correctly for an in-flight session, and a stored value
+  reads back without displacing a neighbour.
+- Each of the four new tests was checked by mutation: disabling the
+  replacement, removing the never-confirmed guard, restoring 0.3.3's increment
+  site, and removing the cap are all caught.
+
 ## 0.3.3
 
 ### Fixed
