@@ -99,6 +99,18 @@ ARE the layout, and they compose, so these are independent switches.
 | `TILE_BUTTON_TITLE` | `Open` | 20 chars | The button's label |
 | `TILE_BUTTON_OPEN` | `true` | bool | Open the link, or fire it silently |
 
+| Setting | What the tile looks like |
+|---|---|
+| `TILE_PROGRESS=bar` | ![smooth bar](images/la-progress.png) |
+| `TILE_PROGRESS=segments` | ![segmented bar](images/la-steps.png) |
+| `TILE_PROGRESS=off` | ![no bar](images/la-status.png) |
+| `TILE_METRICS=true` | ![metric chips](images/la-metrics.png) |
+| `TILE_BUTTON_URL=...` | ![a button](images/la-button.png) |
+
+Those are Notify's own examples from
+[getnotifyapp.com/apidocs](https://getnotifyapp.com/apidocs/), showing the
+shape each setting produces rather than this integration's output.
+
 **`TILE_PROGRESS`.** `bar` sends Notify's `progress` field (0 to 100) and draws
 a continuous bar. `segments` sends `steps` and `step` instead, drawing discrete
 blocks. `off` sends neither. Exactly one of these is ever sent, and the unused
@@ -109,11 +121,17 @@ A segment lights only when its share of the print is fully finished, which
 rounds down. Ten segments means the tenth lights at 100%, not at 95%. Rounding
 to nearest would make a long print appear finished for its final minutes.
 
-**`TILE_METRICS`.** Sends up to three chips: progress as a percentage, time
-left in minutes, and the status word. These take the place of the body line, so
-turning them on removes the model name from the tile. That trade is why it is
-off by default. A chip whose value ends in `%` renders its own miniature bar,
-which is why progress is sent as `61%` rather than `61` with a unit of `%`.
+**`TILE_METRICS`.** Sends two chips: progress as a percentage, and time left in
+minutes. These take the place of the body line, so turning them on removes the
+model name from the tile. That trade is why it is off by default.
+
+Two rather than the six Notify permits, because two fill the row on a phone.
+The status word is deliberately not a third: it already renders in the trailing
+slot from the `status` field, which is sent on every payload whatever the
+layout, so a chip would spend a slot repeating something already visible.
+
+A chip whose value ends in `%` renders its own miniature bar, which is why
+progress is sent as `61%` rather than `61` with a unit of `%`.
 
 **`TILE_BUTTON_URL`.** Rejected at startup unless it begins with `https://`.
 That is Notify's requirement, not this service's, and catching it at startup is

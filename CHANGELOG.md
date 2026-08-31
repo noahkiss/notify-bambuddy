@@ -3,6 +3,37 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.4.1
+
+### Changed
+
+- **Metric chips are two, not three.** The status chip is gone. Two chips fill
+  the row on a phone, and the phase word already renders in the tile's trailing
+  slot from the `status` field, which is sent on every payload whatever the
+  layout. A third chip squeezed the two carrying numbers in order to repeat
+  something already on screen.
+
+### Documentation
+
+- **The README said nothing about either new capability where anyone would
+  look.** The tile layouts had a section, but "What it does" did not mention
+  them, and the same was true of browser subscriptions. A reader forms their
+  impression from that list, so both are now in it.
+
+- **Browser subscriptions have a section of their own.** Support for them has
+  existed for a while and was documented in one clause inside a prerequisites
+  list, which read as though this were iOS only. There is now a "Without an
+  iPhone" section covering what a `WB` device id does, that nothing needs
+  configuring because the id's shape decides it, which platforms web push
+  reaches, and a table of what changes. It also records the two startup
+  refusals: a browser id with `ALERTS=off`, which would leave nothing to send,
+  and a `GRP` group id, which is not a device.
+
+- **The tile layouts are illustrated.** Five screenshots from Notify's own API
+  reference now sit beside the settings that produce them, in the README and as
+  a table in `docs/CONFIGURATION.md`. They are labelled as Notify's examples
+  rather than this integration's output, because they are.
+
 ## 0.4.0
 
 ### Added

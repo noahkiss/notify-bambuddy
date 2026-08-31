@@ -326,12 +326,11 @@ def _metrics_for(session: SessionState, percent: int) -> list:
             "unit": _trim("min", MAX_METRIC_UNIT),
         })
 
-    word = status_word(session)
-    if word:
-        metrics.append({
-            "label": _trim("Status", MAX_METRIC_LABEL),
-            "value": _trim(word, MAX_METRIC_VALUE),
-        })
+    # NO status chip, deliberately. Two chips fill the row on a phone, and the
+    # phase word already has a home: it renders in the trailing slot from the
+    # `status` field, which is sent on every payload regardless of layout. A
+    # third chip would squeeze the two that carry numbers in order to repeat
+    # something already on the tile.
     return metrics[:MAX_METRICS]
 
 

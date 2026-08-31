@@ -44,6 +44,14 @@ to configure inside BambuBuddy beyond issuing the key.
   to tiles that are still on screen instead of orphaning them or creating
   duplicates.
 - **Respects a swipe.** Dismiss a tile and it stays gone until the next print.
+- **The tile is yours to shape.** A smooth percentage bar, discrete segments,
+  or no bar at all; optional metric chips and a tappable button. All optional:
+  set nothing and you get a sensible tile. See
+  [Choosing how the tile looks](#choosing-how-the-tile-looks).
+- **No iPhone required.** A browser subscription gets the same print-started,
+  finished and failed notifications, on any device that can receive web push.
+  There is no Lock Screen tile in that case, because that part is iOS only.
+  See [Without an iPhone](#without-an-iphone).
 
 ## What it deliberately does not do
 
@@ -137,7 +145,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.1
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -174,7 +182,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.1
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -193,7 +201,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.0
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.1
 ```
 
 ```bash
@@ -262,7 +270,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.0
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.1
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -326,11 +334,20 @@ presets.
 
 `TILE_PROGRESS` chooses which kind of bar the tile draws, or none at all.
 
-| Value | What you get |
-|---|---|
-| `bar` (default) | A smooth percentage bar, moving continuously from 0 to 100 |
-| `segments` | Discrete blocks that light as the print passes each share |
-| `off` | No bar. The countdown and status word carry the tile |
+**`bar`** is the default: a smooth percentage bar moving continuously from 0
+to 100.
+
+![A Live Activity with a smooth progress bar](docs/images/la-progress.png)
+
+**`segments`** draws discrete blocks that light as the print passes each
+share. The widget shows the fraction alongside them.
+
+![A Live Activity with a segmented progress bar](docs/images/la-steps.png)
+
+**`off`** draws no bar. The countdown and the status word carry the tile,
+which is calmer than it sounds.
+
+![A Live Activity with no bar, showing only a status word](docs/images/la-status.png)
 
 With `segments`, `TILE_SEGMENTS` sets how many blocks there are (2 to 20,
 default 10). A block lights only once its share is genuinely finished, so ten
@@ -351,14 +368,23 @@ number most people actually read.
 `TILE_METRICS=true` swaps the second line for small labelled chips: progress,
 time left and status.
 
+![A Live Activity with metric chips](docs/images/la-metrics.png)
+
 It is off by default for one reason: **the chips take the place of the model
 name.** If knowing which print is running matters more to you than the numbers,
-leave it off. A progress chip does render its own miniature bar, so this pairs
-well with `TILE_PROGRESS=off`.
+leave it off.
+
+A chip whose value ends in `%` renders its own miniature bar, as the humidity
+chip above shows, so this pairs well with `TILE_PROGRESS=off`. Two chips are
+sent, progress and time left, because two is what fits a phone comfortably.
+The status word is not repeated as a chip: it already appears in the tile's
+trailing slot.
 
 ### A button
 
 `TILE_BUTTON_URL` adds a tappable button to the tile.
+
+![A Live Activity with a progress bar and a button](docs/images/la-button.png)
 
 ```bash
 TILE_BUTTON_URL=https://bambuddy.example.com/
@@ -369,6 +395,11 @@ TILE_BUTTON_OPEN=true         # true opens the link, false fires it silently
 Notify requires **https** here, so a plain `http://192.168.1.50:8000` LAN
 address will be refused at startup rather than failing quietly on your phone.
 If BambuBuddy is not behind TLS, leave this unset.
+
+> The tiles above are Notify's own examples, from
+> [getnotifyapp.com/apidocs](https://getnotifyapp.com/apidocs/). They show the
+> shape each setting produces, not this integration's own output, which puts
+> your printer name on the first line and the model name on the second.
 
 ### Colour and icon
 
@@ -396,6 +427,62 @@ TILE_SEGMENTS=10
 Changes take effect on the **next tile**, not the current one. A print already
 running keeps the layout it started with, which avoids a tile visibly
 rearranging itself mid-print.
+
+---
+
+## Without an iPhone
+
+A Live Activity is an iOS Lock Screen feature, so a tile needs an iPhone or
+iPad. **Everything else works without one.**
+
+Notify can register a **browser subscription** through its web app, which gives
+you a device id starting `WB`. Put that in `NOTIFY_DEVICE_ID` with its token
+and the service runs in notifications-only mode:
+
+```bash
+NOTIFY_DEVICE_ID=WB1a2b3c4d5e6f7g
+NOTIFY_DEVICE_TOKEN=your_token_here
+```
+
+**There is nothing to configure.** The service works out which kind of
+subscription it has from the shape of the id and says so once at startup:
+
+```
+That device is a browser subscription, so there will be no Lock Screen tiles:
+a Live Activity is an iOS feature. Every print is still followed, and you still
+get a notification when one starts, finishes or fails.
+```
+
+Web push is delivered by the browser, so it reaches Chrome, Firefox and Edge on
+Windows, macOS, Linux and Android, and Safari on macOS. Notifications arrive
+whether or not the tab is open, because the browser holds the subscription
+rather than the page.
+
+What changes in this mode:
+
+| | iPhone or iPad | Browser subscription |
+|---|---|---|
+| Lock Screen tile, live progress, countdown | Yes | No |
+| Print started | No (the tile is the announcement) | **Yes** |
+| Print finished, print failed | Yes | Yes |
+| Printer stopped responding | Yes | Yes |
+| Break through Do Not Disturb | Yes | Browser and OS dependent |
+
+The **print started** notification is sent *only* in this mode. On an iPhone
+the tile appearing is the announcement, so a notification saying the same thing
+would be noise. With no tile, nothing else would tell you a print had begun.
+
+Everything else is unchanged. Prints are still tracked the whole way through,
+multiple printers still work, restarts still recover, and outcomes are still
+worked out the same way.
+
+Two things are refused at startup rather than failing quietly later:
+
+- **A browser id with `ALERTS=off`** leaves the service nothing at all it is
+  permitted to send, so it says so instead of running silently forever.
+- **A group id** (one starting `GRP`) is not a device. A tile belongs to one
+  specific iPhone, so the error points you at **Settings → Device** in the app
+  rather than letting the gateway answer with a bare 403.
 
 ---
 

@@ -111,7 +111,11 @@ def test_metrics_carry_progress_with_the_sign_in_the_value():
     m = c["metrics"]
     assert m[0] == {"label": "Progress", "value": "61%"}
     assert {"label": "Time left", "value": "47", "unit": "min"} in m
-    assert len(m) <= 6, "Notify allows six, and six is unreadable on a phone"
+    assert len(m) == 2, (
+        "two chips fill the row on a phone. Notify allows six, but a third "
+        "here would repeat the status word, which the trailing slot already shows"
+    )
+    assert not any(x["label"] == "Status" for x in m)
 
 
 def test_metrics_drop_the_countdown_when_there_is_nothing_to_count():
