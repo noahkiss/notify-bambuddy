@@ -145,7 +145,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.1
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.2
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -182,7 +182,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.1
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.2
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -201,7 +201,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.1
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.2
 ```
 
 ```bash
@@ -270,7 +270,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.1
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.2
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -409,20 +409,47 @@ If BambuBuddy is not behind TLS, leave this unset.
 
 ### Mixing them
 
-The options compose, so pick per taste rather than per preset:
+**You keep the bar and the countdown unless you deliberately turn them off.**
+The countdown is not an option at all: it is sent whenever the printer is
+printing and has given an estimate, in every layout. Nothing here removes it.
+
+These are separate switches, not presets, so they add to the default rather
+than replacing it:
+
+| | Bar | Countdown | Model name | Chips |
+|---|---|---|---|---|
+| nothing set (**default**) | smooth | yes | yes | no |
+| `TILE_PROGRESS=segments` | blocks | yes | yes | no |
+| `TILE_METRICS=true` | smooth | yes | **no** | yes |
+| `TILE_PROGRESS=segments`<br>`TILE_METRICS=true` | blocks | yes | **no** | yes |
+| `TILE_PROGRESS=off` | none | yes | yes | no |
+| `TILE_PROGRESS=off`<br>`TILE_METRICS=true` | none | yes | **no** | yes |
+
+The only thing any of these costs you is the model name, and only when you turn
+chips on, because those take its line.
 
 ```bash
-# Minimal: just a countdown and a word
-TILE_PROGRESS=off
+# The default, spelled out. A smooth bar and a live countdown.
+# (Setting nothing at all gives you exactly this.)
+TILE_PROGRESS=bar
 
-# Dashboard: chips with their own mini bars, no big bar
-TILE_PROGRESS=off
-TILE_METRICS=true
-
-# Blocky: segments instead of a smooth bar, model name kept
+# Blocks instead of a smooth bar. You still get the countdown.
 TILE_PROGRESS=segments
 TILE_SEGMENTS=10
+
+# Bar and countdown kept, with numbers added in place of the model name.
+TILE_METRICS=true
+
+# Minimal: a countdown and a status word, nothing else.
+TILE_PROGRESS=off
 ```
+
+A note on segments and the clock, since they compete for the same corner: the
+widget fills that slot with the countdown first, then `trailing`, then the step
+fraction, then the status word. So **a segmented tile shows the time, not
+`3/4`**, while a print is running with an estimate. The fraction appears when
+there is no countdown to show, which is exactly when it is the more useful of
+the two.
 
 Changes take effect on the **next tile**, not the current one. A print already
 running keeps the layout it started with, which avoids a tile visibly

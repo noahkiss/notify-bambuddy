@@ -425,7 +425,8 @@ def build_content(session: SessionState, config: Config, *, initial: bool) -> di
         content["button"] = _button_for(config)
 
     # --- The trailing slot, which holds exactly one thing ------------------
-    # Priority on the widget is countdown > trailing > status, so every phase
+    # Priority on the widget is countdown > trailing > step fraction >
+    # status, so every phase
     # below sends at most one of the first two and clears the other. Clearing
     # is explicit (JSON null): an omitted field keeps whatever it said before,
     # and a stale layer counter left in `trailing` would hide the status word.

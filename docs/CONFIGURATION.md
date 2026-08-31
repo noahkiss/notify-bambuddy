@@ -111,6 +111,17 @@ Those are Notify's own examples from
 [getnotifyapp.com/apidocs](https://getnotifyapp.com/apidocs/), showing the
 shape each setting produces rather than this integration's output.
 
+These switches are independent and add to the default rather than replacing
+it. The countdown in particular is not a setting: it is sent in every layout
+whenever the printer is printing and has given an estimate.
+
+| | Bar | Countdown | Model name | Chips |
+|---|---|---|---|---|
+| nothing set (default) | smooth | yes | yes | no |
+| `TILE_PROGRESS=segments` | blocks | yes | yes | no |
+| `TILE_METRICS=true` | smooth | yes | no | yes |
+| `TILE_PROGRESS=off` | none | yes | yes | no |
+
 **`TILE_PROGRESS`.** `bar` sends Notify's `progress` field (0 to 100) and draws
 a continuous bar. `segments` sends `steps` and `step` instead, drawing discrete
 blocks. `off` sends neither. Exactly one of these is ever sent, and the unused
@@ -138,6 +149,12 @@ That is Notify's requirement, not this service's, and catching it at startup is
 better than a button that silently does nothing when tapped. With
 `TILE_BUTTON_OPEN=false` the phone performs the request itself without opening
 anything, which suits a webhook more than a link.
+
+**Segments and the countdown share a corner**, and the countdown wins. Notify
+fills that slot with the countdown first, then `trailing`, then the step
+fraction, then `status`, so a segmented tile shows the time while a print is
+running and falls back to `3/4` only when there is no estimate to show. Both
+fields are sent together; the widget decides.
 
 Layout changes take effect on the next tile. A print already running keeps the
 layout it started with, so nothing rearranges itself mid-print.

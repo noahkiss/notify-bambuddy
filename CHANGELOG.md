@@ -3,6 +3,29 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.4.2
+
+### Documentation
+
+- **The layout options read as if they replaced the default. They add to it.**
+  Nothing in 0.4.0 or 0.4.1 removed the progress bar or the countdown, but the
+  only worked examples given were ones that turned things off, and the metrics
+  note said it "pairs well with `TILE_PROGRESS=off`", which reads as a
+  requirement rather than a suggestion. Both the README and
+  `docs/CONFIGURATION.md` now lead with a table of what each combination keeps,
+  and the examples start from the default rather than from the minimal tile.
+
+  The countdown is not a setting at all: it is sent in every layout whenever
+  the printer is printing and has an estimate. That is now said outright.
+
+- **Segments do not cost you the clock.** They compete for the same corner, and
+  Notify fills it with the countdown first, then `trailing`, then the step
+  fraction, then `status`. So a segmented tile shows the time while a print is
+  running, and falls back to `3/4` only when there is no estimate. Verified
+  against the published precedence rule rather than inferred from a screenshot,
+  which had suggested the opposite. The same order is now correct in the
+  `content.py` comment, which listed three of the four.
+
 ## 0.4.1
 
 ### Changed
