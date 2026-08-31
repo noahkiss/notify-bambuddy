@@ -3,6 +3,57 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.4.0
+
+### Added
+
+- **The other Live Activity layouts, as options.** Notify has no "tile type"
+  field: the fields present in a payload ARE the layout, and they compose.
+  These are therefore independent switches rather than a menu of presets, and
+  every one of them defaults to exactly what this service already sent, so an
+  existing deployment sees no change at all.
+
+  - `TILE_PROGRESS` picks the progress indicator: `bar` (the smooth
+    percentage bar, default), `segments` (discrete blocks via Notify's
+    `steps`/`step`), or `off` (no bar, leaving the countdown and status word
+    to carry the tile).
+  - `TILE_SEGMENTS` sets how many blocks a segmented bar has, 2 to 20,
+    default 10. A block lights only once its share of the print is genuinely
+    finished. Rounding to nearest would fill the bar at 95% and leave a long
+    print looking done for its last minutes.
+  - `TILE_METRICS` swaps the model-name line for labelled chips: progress,
+    time left, status. Off by default, because those chips take the place of
+    the model name and that is what most people look at first. Progress is
+    sent as `61%` rather than `61` with a unit, because a value ending in a
+    percent sign earns its own miniature bar from the widget.
+  - `TILE_BUTTON_URL`, `TILE_BUTTON_TITLE` and `TILE_BUTTON_OPEN` add an
+    optional tappable button. The URL must be `https`, which is Notify's
+    requirement, so a plain `http://` LAN address is rejected at startup
+    rather than producing a button that quietly does nothing when tapped.
+
+  Exactly one progress shape is ever sent, and the unused one is explicitly
+  cleared rather than omitted. An omitted field keeps its previous value, so
+  without that a settings change, or a tile adopted from an earlier run, would
+  draw both bars at once for the rest of its life.
+
+  Layout changes take effect on the next tile. A print already running keeps
+  the layout it started with, so nothing rearranges itself mid-print.
+
+### Documentation
+
+- README gains "Choosing how the tile looks", which opens by saying none of it
+  is necessary, and `docs/CONFIGURATION.md` and `.env.example` cover each
+  option with the reasoning behind its default.
+
+### Notes
+
+- Checked against the published reference at
+  https://getnotifyapp.com/apidocs/ rather than from memory.
+- Each new test was verified by mutation: rounding segments to nearest,
+  failing to clear the unused bar, leaving metrics set when off, splitting the
+  percentage into value and unit, not filling the segments on a finished
+  print, and resending the button on every update are all caught.
+
 ## 0.3.4
 
 **Use this instead of 0.3.3.** That release rested on a safety property that

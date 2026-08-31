@@ -62,6 +62,13 @@ MAX_TITLE = 120
 MAX_BODY = 300
 MAX_STATUS = 40
 MAX_TRAILING = 40
+#: Metric chip limits, from the Notify reference. Six chips at most.
+MAX_METRICS = 6
+MAX_METRIC_LABEL = 24
+MAX_METRIC_VALUE = 16
+MAX_METRIC_UNIT = 8
+#: Button limits.
+MAX_BUTTON_TITLE = 20
 
 #: `endsIn` is 1 to 86400 seconds. Both ends bite in practice. Zero arrives
 #: constantly, because the printer reports no ETA during pre-print
@@ -287,6 +294,62 @@ def countdown_after(session: SessionState, content: dict) -> bool:
     return content["endsIn"] is not None
 
 
+def _segment_for(percent: int, segments: int) -> int:
+    """Which block a percentage lights, for a segmented bar.
+
+    Rounds DOWN, so a block lights only once its share of the print is fully
+    done. Rounding to nearest would light the last block at 95% and leave the
+    tile claiming a finished print for the final minutes, which is exactly the
+    lie the progress pin above exists to prevent.
+    """
+    if percent >= 100:
+        return segments
+    return max(0, min(segments, int(percent * segments / 100)))
+
+
+def _metrics_for(session: SessionState, percent: int) -> list:
+    """The chips shown when TILE_METRICS is on.
+
+    Deliberately short. Notify allows six and renders them across one line, so
+    six on a phone is unreadable; two or three earn their place. A percentage
+    VALUE gets a mini pill-bar from the widget for free, which is why the sign
+    is part of the value rather than a `unit`.
+    """
+    metrics: list = [{"label": "Progress", "value": f"{percent}%"}]
+
+    remaining = _clamp_ends_in(session.eta_seconds)
+    if remaining and session.phase in (Phase.PRINTING, Phase.STARTING):
+        minutes = max(1, int(round(remaining / 60.0)))
+        metrics.append({
+            "label": _trim("Time left", MAX_METRIC_LABEL),
+            "value": _trim(str(minutes), MAX_METRIC_VALUE),
+            "unit": _trim("min", MAX_METRIC_UNIT),
+        })
+
+    word = status_word(session)
+    if word:
+        metrics.append({
+            "label": _trim("Status", MAX_METRIC_LABEL),
+            "value": _trim(word, MAX_METRIC_VALUE),
+        })
+    return metrics[:MAX_METRICS]
+
+
+def _button_for(config: Config) -> Optional[dict]:
+    """The tile's button, or None to clear it.
+
+    Sent only on a start. A button never changes during a print, and resending
+    it on every update would be bytes spent on a constant.
+    """
+    if not config.tile_button_url:
+        return None
+    return {
+        "title": _trim(config.tile_button_title, MAX_BUTTON_TITLE),
+        "url": config.tile_button_url,
+        "open": config.tile_button_open,
+    }
+
+
 def build_content(session: SessionState, config: Config, *, initial: bool) -> dict:
     """Build the JSON body for a start or an update.
 
@@ -331,7 +394,36 @@ def build_content(session: SessionState, config: Config, *, initial: bool) -> di
     # progress field when a print starts, so the first frames of a new print
     # carry the last print's percentage: without this pin, a fresh print's
     # tile appears at 97% and then jumps backwards.
-    content["progress"] = _clamp_progress(session.progress if session.progress_trustworthy else 0.0)
+    percent = _clamp_progress(session.progress if session.progress_trustworthy else 0.0)
+
+    # Notify has no "type" field: the fields present ARE the layout. `progress`
+    # draws a smooth bar and `steps`/`step` draw discrete blocks, so sending
+    # both would draw two. The unused one is therefore CLEARED rather than
+    # omitted: an omitted field keeps its old value, which would leave a tile
+    # showing both bars for the rest of its life after a settings change, and
+    # would do the same to a tile adopted from a previous run.
+    if config.tile_progress == "segments":
+        content["progress"] = None
+        content["steps"] = config.tile_segments
+        content["step"] = _segment_for(percent, config.tile_segments)
+    elif config.tile_progress == "off":
+        content["progress"] = None
+        content["steps"] = None
+    else:
+        content["progress"] = percent
+        content["steps"] = None
+
+    # --- Metric chips, when asked for --------------------------------------
+    # These REPLACE the body line, which is why they are off by default: for
+    # most people the model name is the more useful thing.
+    if config.tile_metrics:
+        content["metrics"] = _metrics_for(session, percent)
+    else:
+        content["metrics"] = None
+
+    # --- A button, when configured -----------------------------------------
+    if initial:
+        content["button"] = _button_for(config)
 
     # --- The trailing slot, which holds exactly one thing ------------------
     # Priority on the widget is countdown > trailing > status, so every phase
@@ -387,7 +479,13 @@ def terminal_content(session: SessionState, config: Config) -> dict:
     """
     content = build_content(session, config, initial=False)
     if session.outcome is Outcome.COMPLETED:
-        content["progress"] = 100
+        # Filled in whichever shape this tile is drawing. Setting `progress`
+        # here unconditionally would put a full smooth bar next to a
+        # part-filled segmented one.
+        if config.tile_progress == "segments":
+            content["step"] = config.tile_segments
+        elif config.tile_progress != "off":
+            content["progress"] = 100
     # A finished print has no countdown, whatever it said a moment ago.
     content["endsIn"] = None
     return content

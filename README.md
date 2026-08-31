@@ -137,7 +137,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.4
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.0
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -174,7 +174,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.3.4
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.0
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -193,7 +193,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.3.4
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.0
 ```
 
 ```bash
@@ -262,7 +262,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.3.4
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.0
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -292,6 +292,8 @@ Four variables are required. Everything else has a working default.
 | `ALERTS` | `all` | `all`, `problems`, or `off` |
 | `PRIVACY_MODE` | `false` | Hide filenames from the Lock Screen |
 | `MAX_TILES` | `5` | Notify's limit is 5 live tiles per device |
+| `TILE_PROGRESS` | `bar` | `bar`, `segments`, or `off`. See above |
+| `TILE_METRICS` | `false` | Chips instead of the model name |
 
 The full list, with the reasoning behind every default, is in
 [`.env.example`](.env.example) and
@@ -307,6 +309,93 @@ BAMBUDDY_API_KEY_FILE=/run/secrets/bambuddy_key
 
 Both are redacted from every log line, including tracebacks raised from inside
 urllib, so neither should ever appear in your logs.
+
+---
+
+## Choosing how the tile looks
+
+**You do not need any of this.** Set nothing and you get a printer name, the
+model name, a percentage bar, a live countdown and a status word, which is what
+most people want. This section is only here if you want something different.
+
+Notify has no "tile type" to pick. The fields you send *are* the layout, and
+they combine, so these options are independent switches rather than a menu of
+presets.
+
+### The progress indicator
+
+`TILE_PROGRESS` chooses which kind of bar the tile draws, or none at all.
+
+| Value | What you get |
+|---|---|
+| `bar` (default) | A smooth percentage bar, moving continuously from 0 to 100 |
+| `segments` | Discrete blocks that light as the print passes each share |
+| `off` | No bar. The countdown and status word carry the tile |
+
+With `segments`, `TILE_SEGMENTS` sets how many blocks there are (2 to 20,
+default 10). A block lights only once its share is genuinely finished, so ten
+blocks means one lights every 10%. It rounds down deliberately: a bar that
+fills at 95% spends the last minutes of a print claiming to be done.
+
+```bash
+TILE_PROGRESS=segments
+TILE_SEGMENTS=8
+```
+
+`off` is more useful than it sounds. A tile reading **X1C** / **mascot.3mf** /
+**47 min** with no bar is calm and completely legible, and the countdown is the
+number most people actually read.
+
+### Metric chips
+
+`TILE_METRICS=true` swaps the second line for small labelled chips: progress,
+time left and status.
+
+It is off by default for one reason: **the chips take the place of the model
+name.** If knowing which print is running matters more to you than the numbers,
+leave it off. A progress chip does render its own miniature bar, so this pairs
+well with `TILE_PROGRESS=off`.
+
+### A button
+
+`TILE_BUTTON_URL` adds a tappable button to the tile.
+
+```bash
+TILE_BUTTON_URL=https://bambuddy.example.com/
+TILE_BUTTON_TITLE=Open        # up to 20 characters, default "Open"
+TILE_BUTTON_OPEN=true         # true opens the link, false fires it silently
+```
+
+Notify requires **https** here, so a plain `http://192.168.1.50:8000` LAN
+address will be refused at startup rather than failing quietly on your phone.
+If BambuBuddy is not behind TLS, leave this unset.
+
+### Colour and icon
+
+`NOTIFY_TINT` (default `#00A76F`) sets the accent colour, as `#RRGGBB` or
+`#AARRGGBB`. `NOTIFY_SYMBOL` (default `printer.fill`) is any
+[SF Symbol](https://developer.apple.com/sf-symbols/) name.
+
+### Mixing them
+
+The options compose, so pick per taste rather than per preset:
+
+```bash
+# Minimal: just a countdown and a word
+TILE_PROGRESS=off
+
+# Dashboard: chips with their own mini bars, no big bar
+TILE_PROGRESS=off
+TILE_METRICS=true
+
+# Blocky: segments instead of a smooth bar, model name kept
+TILE_PROGRESS=segments
+TILE_SEGMENTS=10
+```
+
+Changes take effect on the **next tile**, not the current one. A print already
+running keeps the layout it started with, which avoids a tile visibly
+rearranging itself mid-print.
 
 ---
 

@@ -84,6 +84,46 @@ can also travel in a URL, where a `#` would start a fragment.
 
 ---
 
+## Tile layout
+
+Every option here is optional, and the defaults are what this service has
+always sent. Notify has no "tile type" field: the fields present in a payload
+ARE the layout, and they compose, so these are independent switches.
+
+| Variable | Default | Range | What it does |
+|---|---|---|---|
+| `TILE_PROGRESS` | `bar` | `bar`, `segments`, `off` | Which progress indicator to draw |
+| `TILE_SEGMENTS` | `10` | 2 to 20 | Blocks in a segmented bar |
+| `TILE_METRICS` | `false` | bool | Chips in place of the model name |
+| `TILE_BUTTON_URL` | unset | https only, 512 chars | Adds a tappable button |
+| `TILE_BUTTON_TITLE` | `Open` | 20 chars | The button's label |
+| `TILE_BUTTON_OPEN` | `true` | bool | Open the link, or fire it silently |
+
+**`TILE_PROGRESS`.** `bar` sends Notify's `progress` field (0 to 100) and draws
+a continuous bar. `segments` sends `steps` and `step` instead, drawing discrete
+blocks. `off` sends neither. Exactly one of these is ever sent, and the unused
+one is explicitly cleared rather than omitted, so changing this setting cannot
+leave a tile drawing two bars at once.
+
+A segment lights only when its share of the print is fully finished, which
+rounds down. Ten segments means the tenth lights at 100%, not at 95%. Rounding
+to nearest would make a long print appear finished for its final minutes.
+
+**`TILE_METRICS`.** Sends up to three chips: progress as a percentage, time
+left in minutes, and the status word. These take the place of the body line, so
+turning them on removes the model name from the tile. That trade is why it is
+off by default. A chip whose value ends in `%` renders its own miniature bar,
+which is why progress is sent as `61%` rather than `61` with a unit of `%`.
+
+**`TILE_BUTTON_URL`.** Rejected at startup unless it begins with `https://`.
+That is Notify's requirement, not this service's, and catching it at startup is
+better than a button that silently does nothing when tapped. With
+`TILE_BUTTON_OPEN=false` the phone performs the request itself without opening
+anything, which suits a webhook more than a link.
+
+Layout changes take effect on the next tile. A print already running keeps the
+layout it started with, so nothing rearranges itself mid-print.
+
 ## Alerts
 
 | Variable | Default | Notes |

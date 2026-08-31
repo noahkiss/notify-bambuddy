@@ -84,6 +84,14 @@ def make_config(**overrides: Any) -> Config:
         log_level="INFO",
         dry_run=False,
         secrets=("XYZ789TOKEN123",),
+        # Layout defaults, matching what config.py produces with nothing set,
+        # so every existing test keeps describing the default tile.
+        tile_progress="bar",
+        tile_segments=10,
+        tile_metrics=False,
+        tile_button_url=None,
+        tile_button_title="Open",
+        tile_button_open=True,
     )
     values.update(overrides)
     return Config(**values)

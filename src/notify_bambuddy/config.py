@@ -266,6 +266,27 @@ class Config:
     # --- Presentation ------------------------------------------------------
     symbol: str
     tint: str
+
+    #: Which kind of progress indicator the tile draws, if any. Notify has no
+    #: "type" field: the fields present ARE the layout, and they compose. So
+    #: this picks WHICH field carries progress rather than selecting a mode.
+    #: "bar" sends `progress` (a smooth 0 to 100 bar), "segments" sends
+    #: `steps`/`step` (discrete lit blocks), "off" sends neither and leaves a
+    #: text-only tile that is still perfectly useful next to a countdown.
+    tile_progress: str
+    #: How many blocks a segmented bar has. Ignored unless tile_progress is
+    #: "segments". Notify allows 2 to 20.
+    tile_segments: int
+    #: Adds up to six labelled chips (progress, time left) in place of the
+    #: body line. Off by default because it REPLACES the model name, which is
+    #: the thing most people want to see.
+    tile_metrics: bool
+    #: An optional tappable button. Empty disables it entirely.
+    tile_button_url: Optional[str]
+    tile_button_title: str
+    #: True to have the phone OPEN the button's link, false to have it fire
+    #: the request quietly in the background.
+    tile_button_open: bool
     keep_for: int
     #: Hides print filenames from the tile, showing only the printer name,
     #: state, progress and ETA. For anyone whose Lock Screen is visible to
@@ -426,6 +447,34 @@ def load_config(env: Optional[dict] = None) -> Config:
     # would start a fragment.
     tint = tint if tint.startswith("#") else "#" + tint
 
+    # --- How the tile is laid out -----------------------------------------
+    # Everything here is optional and defaults to what this service has always
+    # sent, so an existing deployment sees no change. See README, "Choosing
+    # how the tile looks".
+    tile_progress = (_str("TILE_PROGRESS", env, "bar") or "bar").lower()
+    if tile_progress not in ("bar", "segments", "off"):
+        raise ConfigError(
+            f"TILE_PROGRESS {tile_progress!r} is not a layout. Use 'bar' for a smooth "
+            "percentage bar, 'segments' for discrete blocks, or 'off' for no bar at all."
+        )
+    tile_segments = _int("TILE_SEGMENTS", env, 10, minimum=2, maximum=20)
+
+    tile_button_url = _str("TILE_BUTTON_URL", env, "") or ""
+    if tile_button_url and not tile_button_url.startswith("https://"):
+        raise ConfigError(
+            f"TILE_BUTTON_URL {tile_button_url!r} must start with https://. Notify "
+            "requires TLS for tile buttons, so a plain http:// address on your LAN "
+            "cannot be used here. Leave it unset for no button."
+        )
+    if len(tile_button_url) > 512:
+        raise ConfigError("TILE_BUTTON_URL is longer than the 512 characters Notify allows.")
+    tile_button_title = _str("TILE_BUTTON_TITLE", env, "Open") or "Open"
+    if len(tile_button_title) > 20:
+        raise ConfigError(
+            f"TILE_BUTTON_TITLE {tile_button_title!r} is longer than the 20 characters "
+            "Notify allows on a button."
+        )
+
     keep_for = _int("NOTIFY_KEEP_FOR", env, 300, minimum=0, maximum=14400)
 
     # --- Everything else ---------------------------------------------------
@@ -478,6 +527,12 @@ def load_config(env: Optional[dict] = None) -> Config:
         tiles_enabled=tiles_enabled,
         symbol=symbol,
         tint=tint,
+        tile_progress=tile_progress,
+        tile_segments=tile_segments,
+        tile_metrics=_bool("TILE_METRICS", env, False),
+        tile_button_url=tile_button_url or None,
+        tile_button_title=tile_button_title,
+        tile_button_open=_bool("TILE_BUTTON_OPEN", env, True),
         keep_for=keep_for,
         privacy_mode=_bool("PRIVACY_MODE", env, False),
         alerts=alerts,
