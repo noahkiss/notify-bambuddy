@@ -65,6 +65,16 @@ class Alerts:
 
     # --- Policy ------------------------------------------------------------
 
+    def _urgent(self, urgent: bool) -> bool:
+        """Whether an alert may break through Do Not Disturb.
+
+        `ALERTS_TIME_SENSITIVE=0` is someone saying they do not want this
+        service piercing a Focus mode, and it has to hold for the condition
+        alerts too. They were added sending time_sensitive directly and so
+        overrode a setting the user had explicitly turned off.
+        """
+        return urgent and self._config.alerts_time_sensitive
+
     def _wants(self, problem: bool) -> bool:
         """Whether this alert passes the configured level.
 
@@ -174,6 +184,91 @@ class Alerts:
                          time_sensitive=False)
 
     # --- Delivery ----------------------------------------------------------
+
+    async def hms_raised(self, serial: str, printer_name: Optional[str],
+                         faults: "list") -> None:
+        """One or more new HMS faults appeared.
+
+        Batched into a single push rather than one per fault, because a single
+        physical event routinely raises several codes at once and three
+        notifications for one empty spool is how people turn alerts off.
+        """
+        # Gated by its OWN flag, so `ALERTS=problems` does not veto it. The
+        # condition alerts are each an explicit request; only `ALERTS=off`,
+        # which means "send me nothing", outranks that.
+        if self._config.alert_hms == "off" or self._config.alerts == "off":
+            return
+        worst = min(faults, key=lambda e: e.get("severity", 4))
+        described = [f for f in faults if f.get("description")]
+        if described:
+            lead = str(min(described, key=lambda e: e.get("severity", 4))["description"])
+        else:
+            # No catalogue entry. The code is all there is, and it is still
+            # worth saying: it is what the user will search for.
+            lead = f"Fault {worst.get('full_code', 'unknown')}"
+        if len(faults) > 1:
+            lead = f"{lead} (and {len(faults) - 1} more)"
+        await self._send(
+            serial, f"hms:{worst.get('full_code', '?')}",
+            printer_name or serial, lead,
+            # Severity 1 is fatal and 2 is serious; both are worth breaking
+            # through Do Not Disturb for. 3 and 4 are not.
+            time_sensitive=self._urgent(worst.get("severity", 4) <= 2),
+        )
+
+    async def hms_cleared(self, serial: str, printer_name: Optional[str]) -> None:
+        """Every previously reported fault is gone.
+
+        Never time-sensitive: good news that arrives quietly is still good
+        news, and this exists mainly so a phone that buzzed at 3am shows the
+        problem resolved without the user going to look.
+        """
+        # Gated by its OWN flag, so `ALERTS=problems` does not veto it. The
+        # condition alerts are each an explicit request; only `ALERTS=off`,
+        # which means "send me nothing", outranks that.
+        if self._config.alert_hms == "off" or self._config.alerts == "off":
+            return
+        await self._send(serial, "hms-clear", printer_name or serial,
+                         "Fault cleared", time_sensitive=False)
+
+    async def printer_offline(self, serial: str, printer_name: Optional[str],
+                              online: bool) -> None:
+        """A printer dropped off BambuBuddy, or came back."""
+        if not self._config.alert_offline or self._config.alerts == "off":
+            return
+        await self._send(
+            serial, "offline" if not online else "online", printer_name or serial,
+            "Back online" if online else "Printer went offline",
+            time_sensitive=self._urgent(not online),
+        )
+
+    async def plate_clear(self, serial: str, printer_name: Optional[str]) -> None:
+        """A finished plate is blocking the queue."""
+        if not self._config.alert_plate_clear or self._config.alerts == "off":
+            return
+        await self._send(serial, "plate-clear", printer_name or serial,
+                         "Waiting for the plate to be cleared", time_sensitive=False)
+
+    async def print_paused(self, serial: str, printer_name: Optional[str],
+                           reason: Optional[str], resumed: bool) -> None:
+        """Paused, or resumed.
+
+        A pause with a KNOWN cause is treated as a problem and a pause with no
+        stated cause is not, because a deliberate pause is the user's own doing
+        and an empty spool is not.
+        """
+        if not self._config.alert_pause or self._config.alerts == "off":
+            return
+        # A pause with a KNOWN cause is an incident; one the user made
+        # themselves is not. Only the urgency differs, never whether it is
+        # sent: ALERT_PAUSE was explicitly asked for, and under
+        # `ALERTS=problems` the old gate silently dropped every resume and
+        # every ordinary pause, forever.
+        problem = bool(reason) and not resumed
+        text = "Resumed" if resumed else (reason or "Paused")
+        await self._send(serial, "resumed" if resumed else "paused",
+                         printer_name or serial, text,
+                         time_sensitive=self._urgent(problem))
 
     async def _send(self, serial: str, kind: str, title: str, text: str,
                     time_sensitive: bool, dedupe_key: Optional[str] = None) -> None:

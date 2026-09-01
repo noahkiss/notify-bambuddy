@@ -3,6 +3,84 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.5.0
+
+### Added
+
+- **`BAMBUDDY_RICH_STATUS`, and a paused print that says why.** BambuBuddy
+  serves status on two routes and accepts the same `read_status` key on both:
+  the advertised `/api/v1/webhook/` one reports seven fields, its own
+  `/api/v1/printers/` one reports sixty-three. Polling the second is opt-in and
+  gets HMS faults, layer counters, temperatures and the firmware's current
+  stage.
+
+  The headline is that a paused tile can now read **"Filament ran out"** rather
+  than "Paused", which this integration has had to apologise for since the
+  first release. It also revives `layer_text`, which had been unreachable dead
+  code because the webhook route reports no layers.
+
+- **`TILE_METRICS` takes a list**, so the chips are yours to choose:
+  `progress`, `eta`, `layers`, `nozzle`, `bed`, `chamber`. `true` still means
+  `progress,eta`. A temperature shows its target only while the printer is
+  driving toward one, so an idle nozzle reads `24 C` and not `24/0 C`. A chip
+  whose data this install cannot supply is dropped rather than shown as zero.
+
+- **Four opt-in condition alerts:** `ALERT_HMS` (default `serious`, batching a
+  multi-code event into one push), `ALERT_PAUSE`, `ALERT_PLATE_CLEAR` and
+  `ALERT_OFFLINE`. The last needs no rich status. Every one is off by default,
+  so upgrading pushes nothing new.
+
+- **`TILE_STAGE`** puts the firmware's sub-stage ("Cleaning nozzle tip") in the
+  status slot.
+
+### Fixed, before any of it shipped
+
+An adversarial review of the first cut found ten defects. Each now has a
+regression test that fails when the fix is removed.
+
+- **`ALERT_PLATE_CLEAR` could never fire.** The alert, the config and the
+  documentation all existed, and the parser discarded `awaiting_plate_clear`.
+  Its own test passed because the fixture set the field directly, bypassing the
+  parser production uses.
+- **A fallback announced a false all-clear.** The route is retired on refusal,
+  after which every frame reports no faults. That was read as "the fault went
+  away", so a user was told their filament runout was resolved while the spool
+  was still empty. Each frame now records which route produced it, because the
+  configuration flag still reads `true` while the frames are plain.
+- **A 404 stopped the service.** An older BambuBuddy, or a proxy forwarding
+  only `/api/v1/webhook/`, answers 404. That is a route being absent, not an
+  outage, and treating it as one halted the poll loop at the first printer
+  while the health endpoint still reported healthy.
+- **An all-clear was sent for faults nobody was told about.** Suppressed faults
+  are deliberately remembered so they are not rediscovered every poll, and the
+  clear-side diff ran against that same set. On a printer with an AMS, routine
+  advisories produced a stream of orphan "Fault cleared" pushes.
+- **An advisory hijacked the pause word.** An AMS humidity warning can be
+  active all print. It replaced "Paused" for a pause the user made themselves,
+  and made it Time Sensitive. The tile now applies the same severity floor as
+  the alerts.
+- **Every restart re-announced a standing fault.** The fault set is now seeded
+  from the frame that opens a session, so an active fault is known rather than
+  discovered at 3am.
+- **The new alerts ignored `ALERTS_TIME_SENSITIVE`**, overriding a Do Not
+  Disturb preference the user had explicitly turned off.
+- **`ALERTS=problems` silently ate the opt-in alerts.** Each is already an
+  explicit request, so only `ALERTS=off` outranks one now.
+- **A finished print announced its printer going offline**, which is what
+  switching it off after taking the plate out looks like, and the matching
+  "back online" could never arrive because the session is retired first.
+- **The layer chip rendered `Layer 57/40`.** It repeated two of `layer_text`'s
+  three checks and omitted the one that matters, since BambuBuddy holds the
+  previous print's denominator until the firmware republishes.
+
+### Notes
+
+- Checked against BambuBuddy's source and a live instance. The route, its
+  permission mapping (`Permission.PRINTERS_READ` to `can_read_status`) and the
+  payload shape were all confirmed rather than assumed.
+- Both parser fixtures in `tests/fixtures/` are real captured responses.
+- Twenty mutations across the feature and its fixes are all caught.
+
 ## 0.4.2
 
 ### Documentation

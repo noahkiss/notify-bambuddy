@@ -89,6 +89,13 @@ def make_config(**overrides: Any) -> Config:
         tile_progress="bar",
         tile_segments=10,
         tile_metrics=False,
+        tile_metric_fields=(),
+        bambuddy_rich_status=False,
+        alert_hms="serious",
+        alert_offline=False,
+        alert_plate_clear=False,
+        alert_pause=False,
+        tile_stage=False,
         tile_button_url=None,
         tile_button_title="Open",
         tile_button_open=True,
@@ -347,14 +354,26 @@ def build(config=None, notify=None, with_alerts: bool = False, store=None):
 #: input production cannot produce, so it worked in tests and never once ran
 #: in the field.
 #:
-#: Pass layer numbers explicitly only when testing the layer path itself, and
-#: expect that path to be dead code until the API reports layers.
+#: Pass layer numbers explicitly only when testing the layer path itself.
+#: They are reachable in production ONLY with BAMBUDDY_RICH_STATUS, which polls
+#: BambuBuddy's printers route instead; on the webhook route they are still
+#: hardcoded to zero. A test that supplies them is therefore describing a
+#: rich-status deployment, and should say so.
 
 def status(clock: Clock, *, serial: str = SERIAL, state: str = "RUNNING",
            progress: float = 10.0, remaining_minutes: int = 100,
            layer_num: int = 0, total_layers: int = 0, connected: bool = True,
            subtask_name: str = "Benchy", offset: float = 0.0,
-           awaiting_plate_clear: bool = False, printer_name: str = "X1C-1") -> PrinterStatus:
+           awaiting_plate_clear: bool = False, printer_name: str = "X1C-1",
+           hms_errors: tuple = (), stage_name=None, temperatures=None,
+           door_open: bool = False, rich=None) -> PrinterStatus:
+    # `rich` marks the frame as having come from the printers route, which is
+    # what licenses inferring "no faults" from an empty list. Defaulted from
+    # the rich-only fields rather than required, because a test that supplies
+    # faults or temperatures is describing a rich frame by definition, and
+    # making every such test say so twice invites them to disagree.
+    if rich is None:
+        rich = bool(hms_errors or temperatures or stage_name)
     return PrinterStatus(
         serial=serial,
         printer_id=1,
@@ -370,4 +389,9 @@ def status(clock: Clock, *, serial: str = SERIAL, state: str = "RUNNING",
         gcode_file="/data/Metadata/plate_1.gcode",
         current_print=subtask_name,
         awaiting_plate_clear=awaiting_plate_clear,
+        hms_errors=hms_errors,
+        stage_name=stage_name,
+        temperatures=temperatures,
+        door_open=door_open,
+        rich=rich,
     )

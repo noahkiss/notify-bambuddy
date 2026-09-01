@@ -145,7 +145,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.2
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.0
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -182,7 +182,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.4.2
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.0
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -201,7 +201,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.4.2
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.0
 ```
 
 ```bash
@@ -270,7 +270,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.4.2
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.0
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -301,7 +301,9 @@ Four variables are required. Everything else has a working default.
 | `PRIVACY_MODE` | `false` | Hide filenames from the Lock Screen |
 | `MAX_TILES` | `5` | Notify's limit is 5 live tiles per device |
 | `TILE_PROGRESS` | `bar` | `bar`, `segments`, or `off`. See above |
-| `TILE_METRICS` | `false` | Chips instead of the model name |
+| `TILE_METRICS` | `false` | Chips instead of the model name. Takes a list |
+| `BAMBUDDY_RICH_STATUS` | `false` | HMS reasons, layers, temperatures. See above |
+| `ALERT_HMS` | `serious` | Fault alerts. Needs rich status |
 
 The full list, with the reasoning behind every default, is in
 [`.env.example`](.env.example) and
@@ -454,6 +456,100 @@ the two.
 Changes take effect on the **next tile**, not the current one. A print already
 running keeps the layout it started with, which avoids a tile visibly
 rearranging itself mid-print.
+
+---
+
+## More from BambuBuddy, if you want it
+
+By default this reads BambuBuddy's `/webhook/` status route, which is its
+advertised integration surface and reports seven fields.
+
+BambuBuddy's own app API reports **sixty-three**, to the same `read_status`
+key. Turning that on gets you the thing this integration could never do
+before: **a pause that says why.**
+
+```bash
+BAMBUDDY_RICH_STATUS=1
+```
+
+| | Default | With `BAMBUDDY_RICH_STATUS=1` |
+|---|---|---|
+| A paused print reads | `Paused` | **`Filament ran out`** |
+| Layer counter on the tile | no | `Layer 130/312` |
+| Nozzle and bed temperatures | no | yes, as chips |
+| Current stage | no | `Cleaning nozzle tip` |
+| HMS fault alerts | no | yes |
+
+### Why it is off by default
+
+It is BambuBuddy's **own** API, not the one it advertises for integrations, so
+it can change without the deprecation courtesy `/webhook/` implies. It is also
+nine times the payload on every poll.
+
+If BambuBuddy **refuses** the route (401/403) or **does not have it** (404, an
+older build, or a proxy forwarding only `/api/v1/webhook/`), this falls back to
+the webhook route for the rest of the run and says so once. Prints keep being
+tracked either way; you lose only the extra detail. A timeout or a server error
+is still reported as the outage it is, rather than quietly downgrading the data
+everything runs on.
+
+After a fallback, no fault information arrives at all, so this stops drawing
+conclusions from its absence: it will not tell you a fault cleared on the
+strength of a route that cannot report faults.
+
+### The alerts it unlocks
+
+All off by default. Upgrading pushes nothing new to your phone until you ask.
+
+```bash
+ALERT_HMS=serious       # off | serious (severity 1-2) | all
+ALERT_PAUSE=true        # paused, with the reason, and resumed
+ALERT_PLATE_CLEAR=true  # a finished plate is blocking the queue
+ALERT_OFFLINE=true      # printer dropped off BambuBuddy, and came back
+```
+
+`ALERT_OFFLINE` needs no rich status: `connected` is already one of the seven.
+
+`ALERT_HMS` defaults to `serious` because severity 4 is informational. One
+physical event often raises several codes, so they are batched into one push
+rather than three, and "cleared" is only sent for a fault you were actually
+told about.
+
+The same floor applies to the tile. An AMS humidity advisory can sit active for
+a whole print, so only faults serious enough to halt a print get to describe
+one: pause the printer yourself with an advisory showing and the tile still
+reads `Paused`.
+
+All of these honour `ALERTS_TIME_SENSITIVE`. None of them is vetoed by
+`ALERTS=problems`, since each is already an explicit request; only `ALERTS=off`
+outranks them.
+
+### Temperatures on the tile
+
+`TILE_METRICS` takes a list, so you can choose the chips:
+
+```bash
+TILE_METRICS=nozzle,bed          # just the temperatures
+TILE_METRICS=progress,nozzle     # a percentage and the hot end
+TILE_METRICS=layers,nozzle,bed   # layer counter and both temperatures
+```
+
+Available: `progress`, `eta`, `layers`, `nozzle`, `bed`, `chamber`. `true`
+still means `progress,eta`. Two chips fill the row on a phone and three is the
+practical limit.
+
+A chip whose data this install cannot supply is **dropped, not shown as zero**,
+so asking for temperatures without `BAMBUDDY_RICH_STATUS` gives a shorter row
+rather than a row of noughts.
+
+### The stage name
+
+```bash
+TILE_STAGE=true
+```
+
+Replaces the status word with the firmware's own sub-stage. It changes often
+and is sometimes blank, in which case it falls back to `Printing`.
 
 ---
 

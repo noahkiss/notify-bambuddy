@@ -107,7 +107,7 @@ def test_metrics_carry_progress_with_the_sign_in_the_value():
     """A percentage VALUE earns a mini pill-bar from the widget, which a
     value of "61" with unit "%" does not."""
     s = _printing(progress=61.0, eta_seconds=2820)
-    c = build_content(s, make_config(tile_metrics=True), initial=True)
+    c = build_content(s, make_config(tile_metric_fields=("progress", "eta")), initial=True)
     m = c["metrics"]
     assert m[0] == {"label": "Progress", "value": "61%"}
     assert {"label": "Time left", "value": "47", "unit": "min"} in m
@@ -120,7 +120,7 @@ def test_metrics_carry_progress_with_the_sign_in_the_value():
 
 def test_metrics_drop_the_countdown_when_there_is_nothing_to_count():
     s = _printing(progress=61.0, eta_seconds=None)
-    c = build_content(s, make_config(tile_metrics=True), initial=True)
+    c = build_content(s, make_config(tile_metric_fields=("progress", "eta")), initial=True)
     assert not any(x["label"] == "Time left" for x in c["metrics"])
 
 

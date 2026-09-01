@@ -551,9 +551,9 @@ def test_the_poll_loop_cross_checks_the_printer_id(fake_bambuddy):
     seen = []
     real = module.status_to_event
 
-    def spy(payload, received_at=None, expected_id=None):
+    def spy(payload, received_at=None, expected_id=None, **kwargs):
         seen.append(expected_id)
-        return real(payload, received_at, expected_id)
+        return real(payload, received_at, expected_id, **kwargs)
 
     module.status_to_event = spy
     try:

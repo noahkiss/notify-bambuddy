@@ -210,6 +210,14 @@ def _csv(name: str, env: dict) -> tuple[str, ...]:
 _IOS_DEVICE_ID_RE = re.compile(r"^[A-Z0-9]{8}$")
 _WEB_DEVICE_ID_RE = re.compile(r"^WB[A-Za-z0-9]{14}$")
 
+#: Chips `TILE_METRICS` can show. `progress` and `eta` work on any install;
+#: the rest need BAMBUDDY_RICH_STATUS, and render as nothing without it rather
+#: than as a wrong number.
+TILE_METRIC_FIELDS = ("progress", "eta", "nozzle", "bed", "chamber", "layers")
+
+#: What plain `TILE_METRICS=true` means. The pair that shipped in 0.4.0.
+TILE_METRIC_DEFAULT = ("progress", "eta")
+
 #: `#RRGGBB` or `#AARRGGBB`, with the leading `#` optional. The 8-digit form
 #: puts ALPHA FIRST, which is the opposite of the CSS convention and worth
 #: knowing before wondering why a colour came out transparent.
@@ -287,6 +295,30 @@ class Config:
     #: True to have the phone OPEN the button's link, false to have it fire
     #: the request quietly in the background.
     tile_button_open: bool
+
+    #: Poll BambuBuddy's own printers route instead of the webhook one, for
+    #: HMS faults, layer counters, temperatures and the current stage. Off by
+    #: default: it is the application's own API rather than the advertised
+    #: integration surface, so it can change without notice, and on an
+    #: auth-enabled install the key may be refused. Refusal falls back to the
+    #: webhook route rather than failing.
+    bambuddy_rich_status: bool
+
+    #: Which HMS faults are worth a push: "off", "serious" (severity 1 and 2),
+    #: or "all". Severity 4 is informational and would be noise.
+    alert_hms: str
+    #: Notify when a printer drops off BambuBuddy, and when it comes back.
+    alert_offline: bool
+    #: Notify when a finished plate is blocking the queue.
+    alert_plate_clear: bool
+    #: Notify on pause and resume.
+    alert_pause: bool
+
+    #: Use the firmware's own sub-stage ("Cleaning nozzle tip") as the tile's
+    #: status word instead of the generic phase word.
+    tile_stage: bool
+    #: Which chips `TILE_METRICS` shows, in order. Empty means metrics are off.
+    tile_metric_fields: tuple
     keep_for: int
     #: Hides print filenames from the tile, showing only the printer name,
     #: state, progress and ETA. For anyone whose Lock Screen is visible to
@@ -468,6 +500,37 @@ def load_config(env: Optional[dict] = None) -> Config:
         )
     if len(tile_button_url) > 512:
         raise ConfigError("TILE_BUTTON_URL is longer than the 512 characters Notify allows.")
+    # TILE_METRICS is a boolean OR a list, because "show me chips" and "show me
+    # THESE chips" are the same decision. `true` keeps the pair that shipped in
+    # 0.4.0 so an existing setting is unchanged.
+    raw_metrics = (_str("TILE_METRICS", env, "") or "").strip().lower()
+    if raw_metrics in ("", "0", "false", "no", "off"):
+        tile_metric_fields: tuple = ()
+    elif raw_metrics in ("1", "true", "yes", "on"):
+        tile_metric_fields = TILE_METRIC_DEFAULT
+    else:
+        wanted = [f.strip() for f in raw_metrics.split(",") if f.strip()]
+        unknown = [f for f in wanted if f not in TILE_METRIC_FIELDS]
+        if unknown:
+            raise ConfigError(
+                f"TILE_METRICS does not know {', '.join(repr(u) for u in unknown)}. "
+                f"Choose from {', '.join(sorted(TILE_METRIC_FIELDS))}, or use "
+                "true/false. Temperature chips need BAMBUDDY_RICH_STATUS=1."
+            )
+        if len(wanted) > 6:
+            raise ConfigError(
+                f"TILE_METRICS lists {len(wanted)} chips; Notify allows 6, and more "
+                "than three is unreadable on a phone."
+            )
+        tile_metric_fields = tuple(wanted)
+
+    alert_hms = (_str("ALERT_HMS", env, "serious") or "serious").lower()
+    if alert_hms not in ("off", "serious", "all"):
+        raise ConfigError(
+            f"ALERT_HMS {alert_hms!r} is not a level. Use 'serious' for fatal and "
+            "serious faults only, 'all' to include informational ones, or 'off'."
+        )
+
     tile_button_title = _str("TILE_BUTTON_TITLE", env, "Open") or "Open"
     if len(tile_button_title) > 20:
         raise ConfigError(
@@ -529,10 +592,17 @@ def load_config(env: Optional[dict] = None) -> Config:
         tint=tint,
         tile_progress=tile_progress,
         tile_segments=tile_segments,
-        tile_metrics=_bool("TILE_METRICS", env, False),
+        tile_metrics=bool(tile_metric_fields),
         tile_button_url=tile_button_url or None,
         tile_button_title=tile_button_title,
         tile_button_open=_bool("TILE_BUTTON_OPEN", env, True),
+        bambuddy_rich_status=_bool("BAMBUDDY_RICH_STATUS", env, False),
+        alert_hms=alert_hms,
+        alert_offline=_bool("ALERT_OFFLINE", env, False),
+        alert_plate_clear=_bool("ALERT_PLATE_CLEAR", env, False),
+        alert_pause=_bool("ALERT_PAUSE", env, False),
+        tile_stage=_bool("TILE_STAGE", env, False),
+        tile_metric_fields=tile_metric_fields,
         keep_for=keep_for,
         privacy_mode=_bool("PRIVACY_MODE", env, False),
         alerts=alerts,

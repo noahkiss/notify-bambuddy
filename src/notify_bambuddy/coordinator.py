@@ -51,6 +51,7 @@ from .content import (
     countdown_after,
     job_display_name,
     payload_hash,
+    hms_reason,
     terminal_content,
 )
 from .models import (
@@ -431,6 +432,18 @@ class Coordinator:
             # abandoned: it just sits there showing the last numbers forever.
             # The frame proves BambuBuddy is alive, not the printer.
             log.debug("Ignoring a disconnected status frame for %s", serial)
+            # The frame's NUMBERS are stale, but the fact of the disconnection
+            # is not, and it is the whole point of the offline alert. Handled
+            # here because this return is above every other detector, so a
+            # printer going offline would otherwise be the one condition that
+            # could never be noticed.
+            session = self._sessions.get(serial)
+            if session is not None:
+                if (session.last_connected and self._alerts is not None
+                        and session.phase is not Phase.TERMINAL):
+                    await self._alerts.printer_offline(
+                        session.serial, session.printer_name, online=False)
+                session.last_connected = False
             return
 
         self._latest_status[serial] = status
@@ -486,6 +499,12 @@ class Coordinator:
         if await self._detect_new_print(session, status, now, gap):
             return
 
+        # Snapshot what the diffs below compare against, BEFORE this frame is
+        # applied over the top of it.
+        was_connected = session.last_connected
+        was_phase = session.phase
+        session.last_connected = status.connected
+
         self._apply_status_fields(session, status)
 
         # A dismissed session keeps tracking the print, phase and all. It has
@@ -494,6 +513,13 @@ class Coordinator:
         # creation path for that printer permanently. That was a real bug: one
         # swipe plus one missed ending silenced a printer for good.
         await self._advance_phase(session, status, now)
+
+        # AFTER the phase has advanced, so a pause reason is read from the
+        # frame that caused the pause rather than the one before it, and
+        # BEFORE the dismissed check, because a dismissed tile still wants its
+        # notifications: dismissing a tile silences the tile, not the printer.
+        await self._detect_conditions(session, status, was_connected, was_phase)
+
         if session.delivery is Delivery.DISMISSED:
             return
 
@@ -576,6 +602,17 @@ class Coordinator:
             # nothing stale can be in it, because the print was already running
             # before this service ever looked.
             progress_trustworthy=adopted,
+            # A session can only be born from a CONNECTED frame: the
+            # disconnected guard above returns before ever reaching here. So
+            # this is a fact, not an assumption, and without it the first
+            # disconnection of a print would be compared against None and pass
+            # unnoticed as "no previous frame".
+            last_connected=True,
+            # Seeded from the OPENING frame, so a fault that was already active
+            # is known rather than discovered. Without this a restart, or any
+            # new session on a printer with a standing fault, pushed a Time
+            # Sensitive alert for something the user was told about hours ago.
+            known_hms={e.get("full_code") for e in status.hms_errors},
         )
         self._apply_status_fields(session, status)
         self._sessions[serial] = session
@@ -734,6 +771,77 @@ class Coordinator:
         await self._start_tile(replacement, now)
         return True
 
+    async def _detect_conditions(self, session: SessionState, status: PrinterStatus,
+                                 was_connected: Optional[bool], was_phase) -> None:
+        """The condition alerts, all of them plain diffs against the last frame.
+
+        Every one is opt-in and silent by default, so an existing deployment
+        gains no new notifications by upgrading.
+        """
+        if self._alerts is None:
+            return
+
+        # --- Connectivity --------------------------------------------------
+        # `was_connected` is None on the first frame of a session, which is not
+        # a transition: a printer that was already offline when this started
+        # has not just gone offline, and announcing it would fire on every
+        # restart.
+        if (was_connected is not None and was_connected != status.connected
+                and session.phase is not Phase.TERMINAL):
+            # Not for a finished print. Switching the printer off at the wall
+            # after taking the plate off is the ordinary end of a job, and the
+            # session is retired moments later, so the matching "back online"
+            # could never arrive to close the loop.
+            await self._alerts.printer_offline(
+                session.serial, session.printer_name, online=status.connected)
+
+        # --- HMS faults ----------------------------------------------------
+        # Diffed by `full_code`, because the same fault is republished on every
+        # poll and only its ARRIVAL is news. Severity filtering happens here
+        # rather than in the alert so that a filtered-out fault still updates
+        # the known set: otherwise an informational fault would be rediscovered
+        # as new for as long as it stayed active.
+        # ONLY from a frame that could have carried faults. After the source
+        # falls back to the webhook route every frame reports none, and reading
+        # that as "the fault went away" told users their filament runout was
+        # resolved while the spool was still empty. The config flag cannot
+        # answer this; only the frame can.
+        if status.rich:
+            threshold = 4 if self._config.alert_hms == "all" else 2
+            seen = {e.get("full_code") for e in status.hms_errors}
+            fresh = [e for e in status.hms_errors
+                     if e.get("full_code") not in session.known_hms
+                     and e.get("severity", 4) <= threshold]
+            if fresh:
+                await self._alerts.hms_raised(session.serial, session.printer_name, fresh)
+                session.announced_hms |= {e.get("full_code") for e in fresh}
+            # Diffed against what was ANNOUNCED, not against everything seen.
+            # `known_hms` deliberately records filtered-out faults so they are
+            # not rediscovered every poll, and diffing the all-clear against it
+            # meant a severity-4 advisory nobody was told about produced a
+            # "Fault cleared" push when it went away.
+            if session.announced_hms and not (session.announced_hms & seen):
+                await self._alerts.hms_cleared(session.serial, session.printer_name)
+                session.announced_hms = set()
+            session.known_hms = seen
+
+        # --- Pause and resume ----------------------------------------------
+        if was_phase is not session.phase:
+            if session.phase is Phase.PAUSED:
+                await self._alerts.print_paused(
+                    session.serial, session.printer_name,
+                    hms_reason(session), resumed=False)
+            elif was_phase is Phase.PAUSED and session.phase is Phase.PRINTING:
+                await self._alerts.print_paused(
+                    session.serial, session.printer_name, None, resumed=True)
+
+        # --- A plate nobody has cleared -------------------------------------
+        if status.awaiting_plate_clear and not session.plate_clear_alerted:
+            session.plate_clear_alerted = True
+            await self._alerts.plate_clear(session.serial, session.printer_name)
+        elif not status.awaiting_plate_clear:
+            session.plate_clear_alerted = False
+
     def _apply_status_fields(self, session: SessionState, status: PrinterStatus) -> None:
         """Copy the display fields off a status frame onto a session."""
         if status.printer_name:
@@ -742,6 +850,14 @@ class Coordinator:
         name = job_display_name(status.subtask_name, status.gcode_file)
         if name:
             session.job_name = name
+
+        # Straight copies. All three are absent on the webhook route, where
+        # they arrive as None/() every frame and simply keep the session's
+        # values empty, so nothing downstream has to know which route this
+        # deployment is using.
+        session.temperatures = status.temperatures
+        session.stage_name = status.stage_name
+        session.hms_errors = status.hms_errors
 
         # Progress cannot be believed until the new print has demonstrably
         # moved. BambuBuddy never resets its progress field at print start, so

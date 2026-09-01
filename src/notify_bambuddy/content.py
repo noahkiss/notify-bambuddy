@@ -129,7 +129,38 @@ def job_display_name(subtask_name: Optional[str], gcode_file: Optional[str]) -> 
     return base
 
 
-def status_word(session: SessionState) -> str:
+def hms_reason(session: SessionState, floor: int = 2) -> Optional[str]:
+    """The worst active fault, as a few words fit for the tile's status slot.
+
+    BambuBuddy ships an English sentence per code, and a sentence does not fit
+    in forty characters: "Filament ran out. Please load new filament." is
+    already over. The FIRST SENTENCE is taken rather than a truncation, because
+    "Filament ran out." is a complete thought and "Filament ran out. Please
+    load new fil..." is not.
+
+    Lowest severity number wins, since 1 is fatal and 4 is informational. The
+    catalogue does not cover every code and returns null for many `hms[]`
+    faults, so a fault with no description yields None here: `full_code` is
+    what identifies a fault, and a raw hex code on a Lock Screen tells nobody
+    anything. The generic phase word is the better answer in that case.
+    """
+    # Severity floor, because a fault that is merely ACTIVE is not necessarily
+    # the reason this print stopped. An AMS humidity advisory (severity 4) can
+    # sit there all day; letting it replace "Paused" told a user who paused the
+    # printer themselves that their filament was damp, and made a deliberate
+    # pause look like an incident. Only faults serious enough to halt a print
+    # get to describe one.
+    described = [e for e in session.hms_errors
+                 if e.get("description") and e.get("severity", 4) <= floor]
+    if not described:
+        return None
+    worst = min(described, key=lambda e: e.get("severity", 4))
+    text = str(worst["description"]).strip()
+    sentence = text.split(". ")[0].rstrip(".").strip()
+    return _trim(sentence, MAX_STATUS) if sentence else None
+
+
+def status_word(session: SessionState, config: Optional[Config] = None) -> str:
     """The short phase word shown when no countdown is on screen."""
     if session.phase is Phase.TERMINAL and session.outcome is not None:
         return {
@@ -140,12 +171,20 @@ def status_word(session: SessionState) -> str:
         }[session.outcome]
     if session.phase is Phase.PAUSED:
         # The distinction worth waking someone up for. A deliberate pause can
-        # wait until morning; an empty spool cannot.
-        return "Paused"
+        # wait until morning; an empty spool cannot. When the printer has told
+        # us WHICH it is, say so: this is the single most useful thing the
+        # richer status route adds.
+        return hms_reason(session) or "Paused"
     if session.phase is Phase.SILENT:
         return "Connection lost"
     if session.phase is Phase.STARTING:
         return "Starting"
+    # The firmware's own sub-stage, when asked for and available. "Cleaning
+    # nozzle tip" says more than "Printing", but it changes often and some
+    # stages are blank, so it is opt-in and falls back rather than flickering
+    # to an empty slot.
+    if config is not None and config.tile_stage and session.stage_name:
+        return _trim(session.stage_name, MAX_STATUS)
     return "Printing"
 
 
@@ -307,30 +346,73 @@ def _segment_for(percent: int, segments: int) -> int:
     return max(0, min(segments, int(percent * segments / 100)))
 
 
-def _metrics_for(session: SessionState, percent: int) -> list:
-    """The chips shown when TILE_METRICS is on.
+def _temp_chip(label: str, current, target) -> Optional[dict]:
+    """A temperature chip, or None when the reading is not usable.
 
-    Deliberately short. Notify allows six and renders them across one line, so
-    six on a phone is unreadable; two or three earn their place. A percentage
-    VALUE gets a mini pill-bar from the widget for free, which is why the sign
-    is part of the value rather than a `unit`.
+    Shows the target too when the printer is driving toward one, because 215
+    on its own does not say whether that is where it is meant to be. A zero
+    target means "not heating", and appending "/0" to every idle reading would
+    be noise.
     """
-    metrics: list = [{"label": "Progress", "value": f"{percent}%"}]
+    if not isinstance(current, (int, float)):
+        return None
+    value = f"{round(float(current))}"
+    if isinstance(target, (int, float)) and target > 0:
+        value = f"{value}/{round(float(target))}"
+    return {
+        "label": _trim(label, MAX_METRIC_LABEL),
+        "value": _trim(value, MAX_METRIC_VALUE),
+        "unit": _trim("C", MAX_METRIC_UNIT),
+    }
 
-    remaining = _clamp_ends_in(session.eta_seconds)
-    if remaining and session.phase in (Phase.PRINTING, Phase.STARTING):
-        minutes = max(1, int(round(remaining / 60.0)))
-        metrics.append({
-            "label": _trim("Time left", MAX_METRIC_LABEL),
-            "value": _trim(str(minutes), MAX_METRIC_VALUE),
-            "unit": _trim("min", MAX_METRIC_UNIT),
-        })
 
-    # NO status chip, deliberately. Two chips fill the row on a phone, and the
-    # phase word already has a home: it renders in the trailing slot from the
-    # `status` field, which is sent on every payload regardless of layout. A
-    # third chip would squeeze the two that carry numbers in order to repeat
-    # something already on the tile.
+def _metrics_for(session: SessionState, percent: int, fields: tuple) -> list:
+    """The chips named by TILE_METRICS, in the order they were asked for.
+
+    Notify allows six and renders them across one line, so six on a phone is
+    unreadable; two look right and three are the practical limit. A chip whose
+    value ends in `%` gets a mini pill-bar from the widget for free, which is
+    why the sign is part of the value rather than a `unit`.
+
+    A chip whose data this install cannot supply is DROPPED rather than shown
+    empty or zero. Temperatures need BAMBUDDY_RICH_STATUS, so asking for them
+    without it must leave a shorter row, not a row of noughts.
+    """
+    temps = session.temperatures or {}
+    metrics: list = []
+
+    for field in fields:
+        if field == "progress":
+            metrics.append({"label": "Progress", "value": f"{percent}%"})
+        elif field == "eta":
+            remaining = _clamp_ends_in(session.eta_seconds)
+            if remaining and session.phase in (Phase.PRINTING, Phase.STARTING):
+                minutes = max(1, int(round(remaining / 60.0)))
+                metrics.append({
+                    "label": _trim("Time left", MAX_METRIC_LABEL),
+                    "value": _trim(str(minutes), MAX_METRIC_VALUE),
+                    "unit": _trim("min", MAX_METRIC_UNIT),
+                })
+        elif field == "layers":
+            # Reuses layer_text's validation rather than repeating the >0
+            # checks, because the guard that actually matters is the one
+            # against `layer_num > total_layers`: BambuBuddy keeps the previous
+            # print's denominator until the firmware republishes, so a new
+            # print can transiently read "Layer 57/40". Duplicating two of the
+            # three checks produced exactly that chip beside a 4% bar while the
+            # trailing slot correctly showed nothing.
+            layers = layer_text(session)
+            if layers:
+                metrics.append({
+                    "label": _trim("Layer", MAX_METRIC_LABEL),
+                    "value": _trim(layers.replace("Layer ", ""), MAX_METRIC_VALUE),
+                })
+        elif field in ("nozzle", "bed", "chamber"):
+            chip = _temp_chip(field.capitalize(), temps.get(field),
+                              temps.get(f"{field}_target"))
+            if chip is not None:
+                metrics.append(chip)
+
     return metrics[:MAX_METRICS]
 
 
@@ -415,8 +497,13 @@ def build_content(session: SessionState, config: Config, *, initial: bool) -> di
     # --- Metric chips, when asked for --------------------------------------
     # These REPLACE the body line, which is why they are off by default: for
     # most people the model name is the more useful thing.
-    if config.tile_metrics:
-        content["metrics"] = _metrics_for(session, percent)
+    if config.tile_metric_fields:
+        chips = _metrics_for(session, percent, config.tile_metric_fields)
+        # An empty list would be a payload saying "show no chips", which is not
+        # the same as "leave the body line alone". Clear instead, so a tile
+        # whose only chips were temperatures falls back to the model name when
+        # this install cannot report them.
+        content["metrics"] = chips or None
     else:
         content["metrics"] = None
 
@@ -464,7 +551,7 @@ def build_content(session: SessionState, config: Config, *, initial: bool) -> di
     # --- The phase word ----------------------------------------------------
     # Always sent. It is the fallback the widget reaches for when a countdown
     # expires, so keeping it current covers the overrunning-ETA case for free.
-    content["status"] = _trim(status_word(session), MAX_STATUS)
+    content["status"] = _trim(status_word(session, config), MAX_STATUS)
 
     return content
 

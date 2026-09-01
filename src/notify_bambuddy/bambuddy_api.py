@@ -50,6 +50,19 @@ log = logging.getLogger("notify_bambuddy.bambuddy")
 #: The prefix BambuBuddy mounts its API-key-authenticated routes under.
 API_ROOT = "/api/v1/webhook"
 
+#: BambuBuddy's own printers API, which reports far more than the webhook
+#: route: HMS faults, layer counters, temperatures, the current sub-stage.
+#: Reached with the SAME `read_status` key, because
+#: `_APIKEY_SCOPE_BY_PERMISSION` maps `Permission.PRINTERS_READ` to
+#: `can_read_status`.
+#:
+#: OPT IN ONLY, and it must degrade. This is the application's own API rather
+#: than the advertised integration surface, so it can change without the
+#: deprecation courtesy `/webhook/` implies, and on an auth-enabled install the
+#: key may still be refused. Every caller therefore falls back permanently to
+#: the webhook route on 401 or 403 rather than treating it as an outage.
+PRINTERS_ROOT = "/api/v1/printers"
+
 #: Printer ids are BambuBuddy database primary keys, which are stable for the
 #: life of the printer's entry. They are turned into a session key with this
 #: prefix so they can never collide with a real printer serial recorded by the
@@ -79,6 +92,16 @@ class BambuBuddyError(Exception):
     """Any failure talking to BambuBuddy."""
 
 
+class BambuBuddyMissingRoute(BambuBuddyError):
+    """A 404: this BambuBuddy does not serve that path at all.
+
+    Distinct from a general error because it is PERMANENT and specific to one
+    route. An older BambuBuddy without the printers API, or a reverse proxy
+    that only forwards `/api/v1/webhook/`, answers this way, and the right
+    response is to stop asking rather than to report an outage.
+    """
+
+
 class BambuBuddyAuthError(BambuBuddyError):
     """The API key was rejected, or lacks a permission.
 
@@ -101,12 +124,12 @@ class BambuBuddyClient:
         self._api_key = api_key
         self._timeout = timeout
 
-    async def get(self, path: str) -> Any:
+    async def get(self, path: str, root: str = API_ROOT) -> Any:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._get_blocking, path)
+        return await loop.run_in_executor(None, self._get_blocking, path, root)
 
-    def _get_blocking(self, path: str) -> Any:
-        url = f"{self._base}{API_ROOT}{path}"
+    def _get_blocking(self, path: str, root: str = API_ROOT) -> Any:
+        url = f"{self._base}{root}{path}"
         request = urllib.request.Request(
             url,
             headers={
@@ -131,6 +154,12 @@ class BambuBuddyClient:
                     f"BAMBUDDY_API_KEY against Settings -> API Keys, and that the key "
                     f"carries the 'read_status' permission for the printers you want."
                 ) from None
+            if exc.code == 404:
+                # A ROUTE that is absent, not a printer that is missing. Its own
+                # class because the two need opposite handling: a missing
+                # optional route should be abandoned and worked around, while a
+                # 500 or a timeout is an outage that must be reported.
+                raise BambuBuddyMissingRoute(f"HTTP 404 from {path}{detail}") from None
             raise BambuBuddyError(f"HTTP {exc.code} from {path}{detail}") from None
         except urllib.error.URLError as exc:
             raise BambuBuddyError(f"Could not reach BambuBuddy at {self._base}: {exc.reason}") from None
@@ -177,9 +206,62 @@ class BambuBuddyClient:
             raise BambuBuddyError(f"Status for printer {printer_id} was not an object")
         return data
 
+    async def rich_status(self, printer_id: int) -> dict:
+        """The printers-route status, which reports what the webhook one omits.
+
+        Raises `BambuBuddyAuthError` when the key is refused, which the caller
+        treats as "this install will not serve this route" rather than as an
+        outage. Everything this returns is a superset of `status` for the
+        fields the coordinator needs, so one parser handles both.
+        """
+        data = await self.get(f"/{printer_id}/status", root=PRINTERS_ROOT)
+        if not isinstance(data, dict):
+            raise BambuBuddyError(f"Status for printer {printer_id} was not an object")
+        return data
+
+
+def _whole(value: Any) -> int:
+    """A non-negative whole number, or 0 for anything else.
+
+    Zero is what every consumer already reads as "unknown", so a missing,
+    null, or nonsense value degrades to the behaviour the webhook route has
+    always produced rather than to an exception.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value) if value > 0 else 0
+
+
+def _hms_tuple(value: Any) -> tuple:
+    """The HMS list as a tuple of dicts, discarding anything malformed.
+
+    A fault with no `full_code` is dropped: that field is what IDENTIFIES a
+    fault, so without it the raise/clear diff has nothing stable to compare and
+    would report the same fault as new on every poll. `description` is allowed
+    to be missing, because BambuBuddy's catalogue genuinely does not cover
+    every code and says so.
+    """
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("full_code") or item.get("code")
+        if not code:
+            continue
+        out.append({
+            "full_code": str(code),
+            "severity": _whole(item.get("severity")) or 4,
+            "description": (str(item["description"]).strip()
+                            if item.get("description") else None),
+        })
+    return tuple(out)
+
 
 def status_to_event(payload: dict, received_at: Optional[datetime] = None,
-                    expected_id: Optional[int] = None) -> Optional[PrinterStatus]:
+                    expected_id: Optional[int] = None,
+                    rich: bool = False) -> Optional[PrinterStatus]:
     """Turn one status response into the event the coordinator consumes.
 
     The timestamp is stamped HERE, on arrival, rather than read from the
@@ -226,21 +308,35 @@ def status_to_event(payload: dict, received_at: Optional[datetime] = None,
         state=str(payload.get("state") or "").upper() or "unknown",
         progress=progress_value,
         remaining_minutes=remaining_minutes,
-        # Absent from this API. Zero is the "unknown" value the content
-        # builder already understands, so the tile simply omits the layer line
-        # rather than showing a wrong one.
-        layer_num=0,
-        total_layers=0,
-        # `current_print` is BambuBuddy's own display name, already resolved
-        # from subtask_name or the gcode path. Both slots get it because the
-        # content builder prefers subtask_name and falls back to gcode_file,
-        # and here there is only the one value.
-        subtask_name=current_print,
-        gcode_file=current_print,
+        # Absent from the webhook route, present on the printers route. Zero is
+        # the "unknown" value the content builder already understands, so a
+        # webhook-only deployment omits the layer line rather than showing a
+        # wrong one, exactly as before.
+        layer_num=_whole(payload.get("layer_num")),
+        total_layers=_whole(payload.get("total_layers")),
+        # The webhook route offers only `current_print`, BambuBuddy's own
+        # display name already resolved from subtask_name or the gcode path.
+        # The printers route reports both halves separately, and the content
+        # builder prefers subtask_name, so use the real ones when they are
+        # there and fall back to the single resolved name when they are not.
+        subtask_name=payload.get("subtask_name") or current_print,
+        gcode_file=payload.get("gcode_file") or current_print,
         current_print=current_print,
-        # Not reported by this route. False means "no information", which is
-        # how every consumer already reads it.
-        awaiting_plate_clear=False,
+        hms_errors=_hms_tuple(payload.get("hms_errors")),
+        stage_name=(str(payload["stg_cur_name"]).strip() or None
+                    if payload.get("stg_cur_name") else None),
+        temperatures=payload.get("temperatures")
+        if isinstance(payload.get("temperatures"), dict) else None,
+        door_open=bool(payload.get("door_open")),
+        # Which ROUTE answered, not which fields happened to be present. An
+        # all-clear may only be inferred from an empty fault list when the
+        # route that produced it can actually report faults, and after a
+        # mid-run fallback the config flag still says "rich" while the frames
+        # no longer are.
+        rich=rich,
+        # Reported by the printers route, absent from the webhook one, where
+        # False means "no information" exactly as it always has.
+        awaiting_plate_clear=bool(payload.get("awaiting_plate_clear")),
     )
 
 
@@ -277,6 +373,10 @@ class APISource:
         #: ever created, which is invisible in production with a single source
         #: and silently cross-contaminates every test in a suite.
         self._active_since: dict = {}
+
+        #: True once the printers route has refused this key. One-way for the
+        #: life of the process: see `_fetch_status`.
+        self._rich_refused: bool = False
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -369,7 +469,7 @@ class APISource:
 
         for printer_id in targets:
             try:
-                payload = await self._client.status(printer_id)
+                payload, from_rich_route = await self._fetch_status(printer_id)
             except BambuBuddyAuthError as exc:
                 # Logged once per transition rather than once per poll. A key
                 # whose permissions were revoked mid-run should say so clearly
@@ -381,12 +481,47 @@ class APISource:
                 return
 
             self._succeed()
-            event = status_to_event(payload, expected_id=printer_id)
+            event = status_to_event(payload, expected_id=printer_id, rich=from_rich_route)
             if event is None:
                 log.debug("Ignoring an unrecognisable status payload for printer %s", printer_id)
                 continue
             self._track(event)
             self._enqueue(event)
+
+    async def _fetch_status(self, printer_id: int) -> dict:
+        """One printer's status, from the richest route this install will serve.
+
+        With `BAMBUDDY_RICH_STATUS` off this is exactly the webhook call it has
+        always been.
+
+        With it on, the printers route is tried first and a REFUSAL retires it
+        for the rest of the run. That is deliberately one-way: a 401 or 403
+        here is a statement about how this BambuBuddy is configured, not a
+        transient failure, so retrying it every ten seconds would spend a
+        request per poll forever to be told the same thing. Any OTHER error is
+        left to propagate, because a timeout or a 500 is an outage and must be
+        reported as one rather than silently downgrading the data this service
+        runs on.
+        """
+        if self._config.bambuddy_rich_status and not self._rich_refused:
+            try:
+                return await self._client.rich_status(printer_id), True
+            except (BambuBuddyAuthError, BambuBuddyMissingRoute) as exc:
+                # Refused (401/403) or absent (404). Both are statements about
+                # how this BambuBuddy is configured or which version it is, not
+                # transient failures, so both retire the route. A 404 in
+                # particular is what an older build, or a proxy forwarding only
+                # `/api/v1/webhook/`, returns: treating it as an outage stopped
+                # the whole poll loop at the first printer and the service went
+                # silent while reporting healthy.
+                self._rich_refused = True
+                log.warning(
+                    "BAMBUDDY_RICH_STATUS is on, but this BambuBuddy will not serve the "
+                    "printers route (%s). Falling back to the webhook route for the rest "
+                    "of this run: prints are still tracked, but there will be no HMS "
+                    "fault reasons, layer counts, temperatures or stage names.", exc,
+                )
+        return await self._client.status(printer_id), False
 
     def _targets(self) -> "list[int]":
         """Which printer ids to poll.

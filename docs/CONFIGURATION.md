@@ -159,6 +159,72 @@ fields are sent together; the widget decides.
 Layout changes take effect on the next tile. A print already running keeps the
 layout it started with, so nothing rearranges itself mid-print.
 
+## The richer status route
+
+BambuBuddy serves printer status on two routes, and both accept the same
+`read_status` API key:
+
+| Route | Fields | Used |
+|---|---|---|
+| `/api/v1/webhook/printer/{id}/status` | 7 | always, and by default |
+| `/api/v1/printers/{id}/status` | 63 | with `BAMBUDDY_RICH_STATUS=1` |
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BAMBUDDY_RICH_STATUS` | `false` | Poll the richer route |
+| `ALERT_HMS` | `serious` | `off`, `serious` (severity 1 to 2), or `all` |
+| `ALERT_PAUSE` | `false` | Paused, with the reason, and resumed |
+| `ALERT_PLATE_CLEAR` | `false` | A finished plate is blocking the queue |
+| `ALERT_OFFLINE` | `false` | Printer left BambuBuddy, and came back |
+| `TILE_STAGE` | `false` | Firmware sub-stage as the status word |
+
+**Off by default** because the second route is BambuBuddy's own application
+API rather than the surface it advertises for integrations, so it may change
+without notice, and because it is nine times the payload on every poll.
+
+**It degrades rather than failing.** A 401 or 403 (refused) and a 404 (absent:
+an older BambuBuddy, or a reverse proxy forwarding only `/api/v1/webhook/`)
+both retire the route for the rest of the run, log once, and fall back. Both
+are permanent facts about the deployment, so retrying them every ten seconds
+would spend a request per poll to be told the same thing. A timeout or a 5xx is
+NOT swallowed: that is an outage and is reported as one, because hiding it
+would move the service onto poorer data silently.
+
+**Nothing is inferred from absent data.** Each status frame records which route
+produced it. After a fallback every frame reports no faults, and an all-clear is
+never derived from that, because the frame could not have carried a fault in the
+first place. The configuration flag cannot answer this question: it still reads
+`true` while the frames are plain.
+
+### HMS faults
+
+Severity runs 1 (fatal) to 4 (informational). `ALERT_HMS=serious` covers 1 and
+2. One physical event routinely raises several codes, so they arrive as a
+single push rather than three.
+
+A fault that the filter suppressed is still remembered, so it is not
+rediscovered as new on every poll, but it produces no "cleared" push when it
+goes away: that would be an all-clear for something you were never told about.
+
+The same severity floor governs the tile. An advisory can be active for an
+entire print without being the reason a print stopped, so only faults serious
+enough to halt one may replace `Paused`.
+
+A fault active when a session opens is recorded, not announced. Otherwise every
+restart re-pushed a standing fault as though it had just happened.
+
+### How these interact with `ALERTS`
+
+Each is an explicit opt-in, so `ALERTS=problems` does not veto it; only
+`ALERTS=off` does. All of them honour `ALERTS_TIME_SENSITIVE`, so a user who
+turned off Do Not Disturb break-through keeps it off.
+
+`ALERT_OFFLINE` needs no rich status, since `connected` is one of the seven
+fields. It never fires on the first reading of a session, because a printer
+that was already offline has not just gone offline, and never for a finished
+print, because switching a printer off after taking the plate out is the
+ordinary end of a job.
+
 ## Alerts
 
 | Variable | Default | Notes |

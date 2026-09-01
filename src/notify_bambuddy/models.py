@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -247,6 +247,37 @@ class PrinterStatus:
     #: print is over even when the retained status still claims RUNNING.
     awaiting_plate_clear: bool
 
+    #: Active HMS faults, newest reading wins. Each is the gateway's own dict:
+    #: `full_code`, `code`, `module`, `attr`, `severity` (1 fatal .. 4 info),
+    #: `actions`, and an English `description` that may be None. A TUPLE so an
+    #: event stays hashable and cannot be mutated by a consumer.
+    #:
+    #: Always empty on the `/webhook/` route, which does not report faults.
+    #: Only the richer printers route fills it. Empty therefore means "no
+    #: information" as often as it means "no faults", which is why nothing
+    #: derives an all-clear from emptiness alone.
+    hms_errors: tuple = ()
+
+    #: The firmware's current sub-stage, e.g. "Cleaning nozzle tip". Purely
+    #: cosmetic, and None on the webhook route.
+    stage_name: Optional[str] = None
+
+    #: Nozzle/bed/chamber readings and their targets, as reported. None when
+    #: unavailable rather than an empty dict, so "not reported" and "reported
+    #: as nothing" stay distinguishable.
+    temperatures: Optional[dict] = None
+
+    #: Enclosure door, on the models that have one. False means "no
+    #: information" on any route that does not report it.
+    door_open: bool = False
+
+    #: True when this frame came from the printers route, which can report
+    #: faults. NOT the same as "rich status is configured": the source falls
+    #: back permanently when the route is refused or absent, after which the
+    #: setting still reads on while the frames are plain. Anything inferring
+    #: something from the ABSENCE of data must consult this, not the config.
+    rich: bool = False
+
     @property
     def eta_seconds(self) -> Optional[int]:
         """Remaining time in SECONDS, or None when not known.
@@ -459,6 +490,35 @@ class SessionState:
     #: through recovery, which reconciles against the gateway's own list and
     #: sets this itself.
     tile_loss: str = ""
+
+    #: Live readings copied off the last status frame, for the tile only.
+    #: NOT PERSISTED: all three are cosmetic, they go stale the moment this
+    #: process stops, and the next reading refills them within seconds. Storing
+    #: them would mean a restart could redraw a tile from minute-old
+    #: temperatures as though they were current.
+    temperatures: Optional[dict] = None
+    stage_name: Optional[str] = None
+    #: Active HMS faults from the last frame. Drives the pause reason and the
+    #: raise/clear diff.
+    hms_errors: tuple = ()
+
+    #: What the condition diffs compare against. None on `last_connected`
+    #: means "no frame yet", which is why a session that opens on an already
+    #: offline printer does not announce it as having just gone offline.
+    #:
+    #: NOT PERSISTED, deliberately. After a restart the first frame re-seeds
+    #: them, and the alternative is announcing a fault raised while this
+    #: service was down as though it had just happened.
+    last_connected: Optional[bool] = None
+    #: Every fault code seen on the last frame, whatever its severity. Keeps a
+    #: filtered-out fault from being rediscovered as new on every poll.
+    known_hms: set = field(default_factory=set)
+    #: The subset actually PUSHED about. The all-clear is diffed against this,
+    #: because "cleared" is only news to someone who was told in the first
+    #: place, and an orphan all-clear for a severity-4 advisory the filter
+    #: deliberately suppressed is worse than silence.
+    announced_hms: set = field(default_factory=set)
+    plate_clear_alerted: bool = False
 
     #: Epoch seconds of the last status frame, for silence detection.
     last_status_ts: float = 0.0
