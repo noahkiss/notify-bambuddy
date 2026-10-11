@@ -1,5 +1,13 @@
 # Live Activities in BambuBuddy
 
+> **Historical.** Bambuddy gained native Notify! support on October 9, 2026,
+> so this proposal has been answered. It is kept as the record of how it was
+> made. A few statements below about the Notify gateway were later found to be
+> wrong when checked against the gateway's own source, among them that
+> `dead-token` means a tile the user dismissed and that a `never-started` tile
+> cannot be removed. [`ARCHITECTURE.md`](ARCHITECTURE.md) has the corrected
+> contract.
+
 **For maziggy, or anyone who picks this up.** This is a working iOS Live
 Activity integration for BambuBuddy, running against a real X1 today. It needs
 nothing from you to keep working, so none of this is a request. It is here

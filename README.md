@@ -160,7 +160,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.2
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.3
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -197,7 +197,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.2
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.3
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -216,7 +216,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.2
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.3
 ```
 
 ```bash
@@ -309,7 +309,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.2
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.3
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -574,8 +574,8 @@ TILE_METRICS=layers,nozzle,bed   # layer counter and both temperatures
 ```
 
 Available: `progress`, `eta`, `layers`, `nozzle`, `bed`, `chamber`. `true`
-still means `progress,eta`. Two chips fill the row on a phone and three is the
-practical limit.
+still means `progress,eta`. Chips sit two to a row, so two fill one row and a
+third starts another.
 
 A chip whose data this install cannot supply is **dropped, not shown as zero**,
 so asking for temperatures without `BAMBUDDY_RICH_STATUS` gives a shorter row
@@ -626,6 +626,11 @@ Windows, macOS, Linux and Android, and Safari on macOS. Notifications arrive
 whether or not the tab is open, because the browser holds the subscription
 rather than the page.
 
+They are held for about an hour if the browser itself is not running, a laptop
+asleep overnight for instance. After that the push service drops them, so a
+"print failed" sent at 2am may never pop up on a machine that slept until 8.
+It is still listed in Notify's history.
+
 What changes in this mode:
 
 | | iPhone or iPad | Browser subscription |
@@ -634,7 +639,7 @@ What changes in this mode:
 | Print started | No (the tile is the announcement) | **Yes** |
 | Print finished, print failed | Yes | Yes |
 | Printer stopped responding | Yes | Yes |
-| Break through Do Not Disturb | Yes | Browser and OS dependent |
+| Break through Do Not Disturb | Yes | No |
 
 The **print started** notification is sent *only* in this mode. On an iPhone
 the tile appearing is the announcement, so a notification saying the same thing
@@ -670,10 +675,12 @@ So the moments that matter get an ordinary push notification as well:
 | Print failed or stopped | ✓ | ✓ | ✓ |
 | Printer stopped responding | ✓ | ✓ | |
 
-"Print started" is sent only to a browser subscription, where there is no tile
-to announce it.
+"Print started" is sent only to a browser or a Mac, where there is no tile to
+announce it.
 
-Time Sensitive alerts break through Do Not Disturb and Focus. A successful
+Time Sensitive alerts break through Do Not Disturb and Focus on an iPhone. A
+browser cannot do that: the gateway marks them urgent so they are delivered
+promptly, but no browser lets a notification override a Focus mode. A successful
 print never is: nobody needs to be woken at 3am by good news. Set
 `ALERTS=off` for tiles only.
 
@@ -760,9 +767,9 @@ while the app is closed, and iOS then discards new tiles silently, with no
 error anywhere. This service checks after 90 seconds and says so:
 
 ```
-Tile LA7Q2ZKM was accepted but has not appeared on the phone. This usually
-means iOS is discarding Live Activity starts because Notify's start credential
-is stale. Open the Notify app once on the device.
+Tile LA7Q2ZKM for bb1 has not been confirmed yet. If no tile appeared on the
+device, open the Notify app once so it can report a fresh start credential;
+that is usually needed after the app is updated.
 ```
 
 **The countdown is wrong by a factor of 60.** That is the bug this project

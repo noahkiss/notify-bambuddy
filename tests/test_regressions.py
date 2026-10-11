@@ -1426,10 +1426,12 @@ def test_the_sweep_refuses_when_two_unowned_tiles_claim_the_same_printer(clock):
         "two ambiguous tiles were both ended on a guess"
 
 
-def test_recovery_does_not_recreate_a_never_started_tile(clock):
-    """The runtime path refuses this, because a tile iOS displays while the app
-    stays closed is reported the same way as one that never arrived. A restart
-    must not reintroduce the duplicate-tile symptom a release was cut to fix."""
+def test_a_restart_across_a_never_started_reap_still_gives_the_print_a_tile(clock):
+    """Reversed in 0.5.3. This pinned recovery recording a DISMISSAL for a
+    never-started tile, which refused the whole creation path until the job
+    changed: no tile and no alerts for the rest of the print, and none for a
+    reprint of the same file within three days. Runtime replaces the same reap,
+    so a restart in between must not change the outcome."""
     from notify_bambuddy.notify_client import ActivityStatus
 
     coord, notify, store = build()
@@ -1445,9 +1447,11 @@ def test_recovery_does_not_recreate_a_never_started_tile(clock):
 
     coord2, notify2, _ = build(store=store, notify=notify)
     run(coord2.recover())
+    assert not store.is_dismissed(SERIAL), "a reap was recorded as the user's swipe"
 
-    assert store.is_dismissed(SERIAL), \
-        "recovery did not suppress a never-started tile the way runtime does"
+    clock.advance(30)
+    run(coord2.handle(status(clock, progress=30.0)))
+    assert len(notify.started) == 2, "the print was left with no tile after the restart"
 
 
 # ---------------------------------------------------------------------------
@@ -1475,7 +1479,6 @@ def test_a_live_print_whose_tile_the_gateway_dropped_gets_another(clock):
     itself.
     """
     coord, notify, _ = build()
-    coord._device_confirms_tiles = True
     run(coord.handle(status(clock)))
     first = notify.started[0]["activityId"]
 
@@ -1494,39 +1497,29 @@ def test_a_live_print_whose_tile_the_gateway_dropped_gets_another(clock):
     assert coord._sessions[SERIAL].activity_id is not None
 
 
-def test_a_never_started_reap_is_not_replaced_on_a_device_that_never_confirms(clock):
-    """The safety property the whole feature rests on.
+def test_a_never_started_reap_is_replaced_even_before_any_tile_has_been_confirmed(clock):
+    """Reversed in 0.5.3, from Notify's own source.
 
-    A never-started reap means the gateway gave up waiting for the Notify app
-    to confirm. It does NOT mean the screen is clear: the app confirms only
-    while it is open, so a tile iOS is displaying right now is reaped
-    identically to one that never arrived.
-
-    Nothing can remove that tile. The pre-start sweep reads `list_device`,
-    which lists only LIVE tiles, and a reaped tile is already ended in the
-    gateway's records, so it is never a candidate. Replacing it therefore puts
-    two tiles for one printer on the Lock Screen, permanently.
-
-    So on a device that has never confirmed anything, this must NOT replace.
+    This used to assert the opposite: no replacement on a device that had not
+    yet confirmed a tile, because a reaped tile might be on screen and nothing
+    could remove it. The second half is false. The next time the Notify app
+    runs, the gateway ends any tile whose row is already over and the app
+    ends any tile the gateway no longer lists as live. So refusing bought
+    nothing but a print with no tile: that same app launch, which the logs
+    tell the user to make, removed the reaped tile and left nothing in its
+    place.
     """
     coord, notify, _ = build()
-    coord._device_confirms_tiles = False
     run(coord.handle(status(clock)))
     first = notify.started[0]["activityId"]
 
     _reap(notify, first, "never-started")
     clock.advance(60)
     run(coord.handle(status(clock, progress=40.0)))
+    clock.advance(30)
+    run(coord.handle(status(clock, progress=45.0)))
 
-    for i in range(5):
-        clock.advance(30)
-        run(coord.handle(status(clock, progress=45.0 + i)))
-
-    assert len(notify.started) == 1, (
-        "replaced an ambiguously-reaped tile on a device that has never "
-        "confirmed one; the original may still be on the Lock Screen and "
-        "nothing can remove it"
-    )
+    assert len(notify.started) == 2, "a live print was left with no tile after a reap"
 
 
 def test_a_rollover_does_not_spend_the_replacement_budget(clock):
@@ -1537,7 +1530,6 @@ def test_a_rollover_does_not_spend_the_replacement_budget(clock):
     dead on exactly the long prints that most need it.
     """
     coord, notify, _ = build()
-    coord._device_confirms_tiles = True
     run(coord.handle(status(clock)))
 
     session = coord._sessions[SERIAL]
@@ -1552,7 +1544,6 @@ def test_a_print_is_not_given_replacement_tiles_forever(clock):
     budget only the phone's owner can replenish, so a gateway removing every
     tile must not be answered on every reading."""
     coord, notify, _ = build()
-    coord._device_confirms_tiles = True
     run(coord.handle(status(clock)))
 
     for i in range(6):

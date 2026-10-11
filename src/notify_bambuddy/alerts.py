@@ -32,7 +32,7 @@ from typing import Optional
 
 from .config import Config
 from .models import Outcome
-from .notify_client import NotifyClient, NotifyError
+from .notify_client import NotifyDeliveryFailed, NotifyClient, NotifyError
 
 log = logging.getLogger(__name__)
 
@@ -289,8 +289,16 @@ class Alerts:
                 group_type=f"bambuddy-{serial}",
                 time_sensitive=time_sensitive,
             )
+        except NotifyDeliveryFailed as exc:
+            # The gateway accepted the request and could not deliver it. When
+            # the cause will repeat on every alert until someone acts, such as
+            # a retired browser subscription, it is an error and says what to
+            # do: on a browser or a Mac these alerts are the ONLY thing this
+            # service can send. A passing Apple outage is not, and is logged
+            # like any other failed alert.
+            level = logging.ERROR if exc.actionable else logging.WARNING
+            log.log(level, "Could not deliver the %s alert for %s: %s", kind, serial, exc)
         except NotifyError as exc:
-            # Best effort by design. The tile is the primary channel; a failed
-            # alert must never become an exception the coordinator has to
-            # handle mid-state-transition.
+            # Best effort by design: a failed alert must never become an
+            # exception the coordinator has to handle mid-state-transition.
             log.warning("Could not send the %s alert for %s: %s", kind, serial, exc)

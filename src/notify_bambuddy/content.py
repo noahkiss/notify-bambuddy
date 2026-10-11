@@ -5,7 +5,12 @@
 # decision in this module. The widget renders ONE thing in its trailing
 # position, in a fixed priority order:
 #
-#       live countdown  >  trailing text  >  status word
+#       live countdown  >  trailing text  >  step fraction  >  status word
+#
+# The step fraction ("4/10") exists only when segments are drawn
+# (TILE_PROGRESS=segments), and it outranks the status word. So on a segmented
+# tile the phase word has to travel in `trailing` in every phase without a
+# countdown, or it never renders. See `build_content`.
 #
 # So a tile sent `endsIn` AND `trailing: "Layer 412/1247"` AND
 # `status: "Printing"` shows the countdown and nothing else. The layer counter
@@ -369,8 +374,8 @@ def _temp_chip(label: str, current, target) -> Optional[dict]:
 def _metrics_for(session: SessionState, percent: int, fields: tuple) -> list:
     """The chips named by TILE_METRICS, in the order they were asked for.
 
-    Notify allows six and renders them across one line, so six on a phone is
-    unreadable; two look right and three are the practical limit. A chip whose
+    Notify allows six and lays them out two to a row, so six on a phone is
+    three rows of small print; two fill a single row and look right. A chip whose
     value ends in `%` gets a mini pill-bar from the widget for free, which is
     why the sign is part of the value rather than a `unit`.
 
@@ -546,7 +551,18 @@ def build_content(session: SessionState, config: Config, *, initial: bool) -> di
         # outranks it. See the keepalive dependency in the module header for
         # why clearing `endsIn` here is safe.
         content["endsIn"] = None
-        content["trailing"] = None
+        # The slot runs countdown, then `trailing`, then the STEP FRACTION,
+        # then `status` (Notify's widget). With segments drawn, the fraction
+        # is always present, so the status word below could never render: a
+        # paused print read "4/10" instead of "Filament ran out", a silent one
+        # "4/10" instead of "Connection lost", and a failed one ended on
+        # "4/10". The word goes in `trailing` instead, the one place that
+        # outranks the fraction. Without segments it is cleared as before,
+        # because nothing else competes with `status`.
+        if config.tile_progress == "segments":
+            content["trailing"] = _trim(status_word(session, config), MAX_TRAILING)
+        else:
+            content["trailing"] = None
 
     # --- The phase word ----------------------------------------------------
     # Always sent. It is the fallback the widget reaches for when a countdown

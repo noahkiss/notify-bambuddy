@@ -163,23 +163,23 @@ After 90 seconds the service checks whether the gateway has heard that the
 tile reached the phone, and says so if it has not:
 
 ```
-Tile LA7Q2ZKM for bb1 has not been confirmed by the Notify app. If it IS on
-your Lock Screen, nothing is wrong: the app only confirms tiles while it is
-open. If no tile appeared, open the Notify app once on the device to refresh
-its start credential.
+Tile LA7Q2ZKM for bb1 has not been confirmed yet. If no tile appeared on the
+device, open the Notify app once so it can report a fresh start credential;
+that is usually needed after the app is updated.
 ```
 
-**Look at your Lock Screen.** That message names both possibilities because
-this service genuinely cannot tell them apart, and the common one is benign.
+**Look at your Lock Screen.** A tile is "confirmed" when the Notify app reports
+its token to the gateway, and it does that from the background: push-to-start
+launches the app behind the scenes for exactly this. So a tile that appears is
+normally confirmed within seconds, with the app closed.
 
-A tile is confirmed only when the Notify app reports that iOS displayed it,
-and for a background integration the app is normally closed, which is the
-entire point of push-to-start. So a perfectly healthy tile can sit on your
-Lock Screen for hours and never be confirmed.
+Earlier versions of this message said the opposite, that the app confirms only
+while it is open and that an unconfirmed tile on screen meant nothing was
+wrong. That was a guess, and it was mistaken.
 
-**If the tile is there, ignore the message.** Nothing is blocked and nothing
-is retried. Earlier versions treated this as a failure and stopped starting
-tiles, which escalated into a self-inflicted outage; that is gone.
+**If the tile is there**, Apple was simply slow. It may deliver a start at any
+point inside the gateway's fifteen-minute window, and the app confirms it when
+it lands. Nothing is blocked and nothing is retried in the meantime.
 
 **If no tile appeared**, opening the Notify app once is the whole fix. iOS
 lets an app create a Live Activity while it is closed using a credential
@@ -187,22 +187,31 @@ registered at launch. Updating or reinstalling the app rotates that
 credential, and pushes to the old one are accepted by Apple and then silently
 discarded. No error reaches the gateway, the app, or you.
 
-### Notify is refusing new tiles
+### Notify is holding back new tiles
 
 Separately from anything this service decides, the gateway defends the
-device's spawn budget. After repeated starts it believes never landed, it
-refuses further ones with a `429` and a quiet period:
+device's start budget. After repeated starts that never produced a tile, it
+refuses further ones with a `429` and an escalating quiet period, and this
+service logs the gateway's own explanation:
 
 ```
-Notify is refusing new tiles for this device because recent ones never
-appeared. Open the Notify app once on the phone to refresh its credential,
-then wait N minutes.
+Notify is holding back new tiles for this device: Apple is silently ignoring
+Live Activity starts for this device right now: 3 in a row were accepted but
+no tile ever appeared. ...
 ```
 
-**Waiting alone does not clear this.** The counter resets when the phone
-reports a fresh credential, which happens when you open the app. This is the
-gateway's decision, not this service's, and there is nothing to configure
-here.
+**It clears by itself** once the quiet period has passed; the gate is elapsed
+time. Opening the Notify app can shorten it: the app reports the token of any
+tile actually on the device, which resets the gateway's count, and a fresh
+start credential, which retries a start still pending. Whether that applies
+right now is something the gateway knows, and its message, quoted as it stands,
+says so. Earlier versions of this service told everyone that only opening the
+app would help, which was wrong whenever there was nothing for it to report.
+
+The usual underlying cause is a stale start credential after the Notify app was
+updated or reinstalled. Opening the app once fixes that for future starts, even
+when it cannot shorten the current wait. This is the gateway's decision, not
+this service's, and there is nothing to configure here.
 
 ---
 

@@ -3,6 +3,89 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.5.3
+
+Every change here comes from reading the Notify gateway's own source and the
+Notify app's architecture notes, rather than inferring their behaviour from
+outside. Several things this service believed, and told its users, were wrong.
+
+### Fixed
+
+- **A segmented tile hid the reason a print stopped.** The widget's corner
+  shows the countdown, then `trailing`, then the step fraction, then the status
+  word. With `TILE_PROGRESS=segments` the fraction is always present, so a
+  paused print read `4/10` instead of `Filament ran out`, a silent one `4/10`
+  instead of `Connection lost`, and a failed one ended on `4/10`. The phase word
+  now goes in `trailing` whenever there is no countdown.
+
+- **`dead-token` was treated as the user swiping the tile away.** The gateway
+  sets it only when the device's start credential is refused while a tile is
+  still pending, which is to say no tile ever existed. The printer then got no
+  tile for the rest of a print the user had never seen one for. It is now
+  replaced like any other lost tile, and counted against the replacement limit.
+
+- **A tile that might be appearing was thrown away.** A start that fails with
+  a 502 marked `deliveryState: "unknown"` means Apple never answered, so the
+  tile may still appear, and the gateway keeps its record and returns its id.
+  That id was discarded, leaving the tile unowned for this service's own
+  pre-start sweep to end later. It is now followed like any other start, with
+  an expiry counted from the moment it began rather than from the age of the
+  print, which would have rolled it over seconds after it started.
+
+- **Other start failures now wait as long as the gateway asks.** A 502 that
+  says nothing reached the phone carries `retryAfterSeconds` only when waiting
+  helps, and is honoured. Without it, the gateway's own message (usually "open
+  the Notify app once") is logged as an error. A 502 with no gateway body at
+  all, which is a proxy in front of it, is treated as the passing outage it is.
+
+- **Never-started tiles are replaced, at runtime and across a restart.** The
+  earlier belief was that a reaped tile might be on screen and that nothing
+  could ever remove it, so replacing it risked a permanent duplicate. Both
+  halves were wrong. Push-to-start launches the Notify app in the background,
+  where it reports the tile's token, so a tile that appears is normally
+  confirmed within seconds and a reap almost always means it never appeared.
+  If one did, the next app launch clears it. Declining therefore left prints
+  with no tile, and on a restart it was worse: the reap was recorded as a
+  dismissal, which also silenced every alert for that print and for a reprint
+  of the same file within three days.
+
+- **Failed alerts now say why.** Notify answers every delivery failure with
+  the same "Failed to send notification" and puts the reason elsewhere in the
+  response. A browser whose push subscription had been retired failed every
+  alert, which on a browser is everything this service sends, and the log never
+  said to reopen the Notify web app. Retired subscriptions and tokens are now
+  logged as errors with the remedy; a passing Apple outage stays a warning.
+
+- **The start throttle's advice is now Notify's own.** This service used to
+  tell everyone that only opening the Notify app would clear it. Waiting clears
+  it; opening the app can shorten it, but only when there is a tile or a pending
+  start for the app to report. The gateway knows which and says so, and that is
+  what gets logged now. A 429 that is not the gateway's throttle, from
+  something in front of it, no longer sends anyone to the app at all.
+
+- **The 90 second check no longer says something false.** It told users that
+  an unconfirmed tile on screen meant nothing was wrong, because the app
+  "only confirms tiles while it is open". It does not; see above.
+
+### Documentation
+
+- The README no longer says a browser may break through Do Not Disturb, which
+  no browser allows, and now says a browser that is not running for more than
+  about an hour drops alerts sent meanwhile. "Print started" is sent to a Mac as
+  well as a browser.
+- `ARCHITECTURE.md`, `TROUBLESHOOTING.md` and `CONFIGURATION.md` are corrected
+  on every point above. `ARCHITECTURE.md` still said never-started meant
+  "never recreate".
+- `UPSTREAM.md` is marked as the historical record of the proposal that native
+  Bambuddy support has since answered, with a note that some of its claims
+  about the gateway were later corrected.
+
+### Verification
+
+Two adversarial reviews, the second of which found thirteen problems in the
+first round of these fixes, including the restart path above. Seventeen
+mutations across the fixes are all caught by the suite.
+
 ## 0.5.2
 
 ### Documentation

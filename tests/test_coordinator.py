@@ -492,14 +492,20 @@ def test_a_throttled_device_stops_starts_without_touching_updates(clock):
     from notify_bambuddy.notify_client import NotifyThrottled
 
     coord, notify, _ = build()
+    gateway_says = ("Opening the app will not shortcut this: there is no pending tile "
+                    "left to retry. Please wait about 30 minute(s).")
     notify.fail_next("start", NotifyThrottled(
-        "Apple is ignoring starts", 429, {"retryAfterSeconds": 1800}
+        gateway_says, 429, {"retryAfterSeconds": 1800, "openingTheAppMayHelp": False}
     ))
     run(coord.handle(status(clock)))
     assert notify.started == []
     snapshot = coord.snapshot()
     assert snapshot["starts_blocked_for"] > 0
-    assert "Notify app" in snapshot["starts_blocked_reason"]
+    # The gateway's own advice, which knows whether opening the app can help.
+    # This used to be replaced by a fixed "open the Notify app", which was
+    # wrong in exactly this case.
+    assert gateway_says in snapshot["starts_blocked_reason"]
+    assert "Open the Notify app" not in snapshot["starts_blocked_reason"]
 
 
 # ---------------------------------------------------------------------------

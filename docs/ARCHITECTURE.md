@@ -378,19 +378,26 @@ which stays readable for a day after a tile ends.
 | `endReason` | Meaning | What this service does |
 |---|---|---|
 | `dismissed` | The user swiped it away | Never recreate it for this print |
-| `dead-token` | The tile vanished from the device | Same as dismissed |
+| `dead-token` | No tile ever existed: the start credential was refused while the tile was still pending | Recreate. A start against a dead credential gets the gateway's 409, which says to open the app |
 | `script` | We ended it | Nothing |
-| `never-started` | The gateway believes the push produced no tile | **Never recreate**, at runtime or on restart |
+| `never-started` | The tile's token never came back within fifteen minutes | Recreate, bounded. If it did appear, the next app launch removes it |
 | `overdue` | The countdown lapsed 30 min ago | Recreate |
 | `abandoned` | A countdown-less tile went 2h silent | Recreate |
 | `expired` | Past Apple's 8-hour ceiling | Recreate |
 
-`never-started` sits with the top group despite sounding like the bottom one,
-and that was learned the hard way. A tile iOS displays while the Notify app
-stays closed is never reported back either, so from here it is
-indistinguishable from one that truly never arrived. Recreating on it put a
-second tile beside a live one on real hardware. It is now refused on both the
-runtime and the restart paths.
+`never-started` and `dead-token` both took more than one attempt. For a while
+`never-started` was not recreated at all, on the belief that a reaped tile
+could sit on the Lock Screen indefinitely and that nothing could remove it.
+Notify's own source says otherwise. Push-to-start launches the Notify app in
+the background, where it reports a new tile's token, so a tile that appears is
+normally confirmed within seconds and a reap almost always means it never
+appeared. If one did, the next time the app runs the gateway ends any tile
+whose row is already over and the app ends any tile the gateway no longer
+lists as live. Refusing to recreate therefore traded a duplicate that
+lasts until the next app launch for a print with no tile at all. `dead-token`
+was treated as a swipe, when the gateway sets it only for a tile that never
+existed. Both now recreate, bounded by `MAX_RECREATE_ATTEMPTS` and by the
+gateway's start throttle.
 
 Conflating the dismissal group with the recreate group is how an integration
 permanently stops working for a printer whose ETA happened to overrun by half
@@ -492,8 +499,13 @@ The gateway notices after 15 minutes and, after two such losses, begins
 refusing starts with a `429` and an escalating quiet period (30 minutes, then
 3 hours, then 6).
 
-Waiting does not fix it. The counter resets when the phone reports a fresh
-credential, which happens when the user opens the Notify app.
+Waiting does clear it: the gate is elapsed time. Opening the Notify app can
+shorten it, because the app reports the token of any tile actually on the
+device, which resets the gateway's count, and a fresh start credential, which
+re-drives a start still pending (reported as `openingTheAppMayHelp`). The
+gateway's message says which applies, and the service logs it as it stands.
+An earlier version of this document said that only opening the app would
+help.
 
 So 90 seconds after every start, this service asks whether the tile is
 `active` yet. If it is still `starting`, it logs one line naming BOTH
@@ -554,14 +566,17 @@ The Live Activity widget renders one value in its trailing position, in a
 fixed priority order:
 
 ```
-live countdown  >  trailing text  >  status word
+live countdown  >  trailing text  >  step fraction  >  status word
 ```
 
 A tile sent `endsIn` **and** `status: "Paused"` shows the countdown and
 nothing else. The status word cannot render while a countdown is live, on any
-surface, ever. The middle slot is not used here at all: the only thing that
-ever wanted it was a layer counter, and there are no layer numbers to put in
-it.
+surface, ever. The step fraction (`4/10`) exists only with
+`TILE_PROGRESS=segments`, and it outranks the status word too, so on a
+segmented tile the phase word is sent in `trailing` in every phase without a
+countdown; otherwise a paused print would read `4/10` instead of
+`Filament ran out`. `trailing` also carries the layer counter while printing
+before an ETA is known, when `BAMBUDDY_RICH_STATUS` supplies layers.
 
 So the phase decides what may be sent:
 
@@ -569,9 +584,9 @@ So the phase decides what may be sent:
 |---|---|
 | Printing with a known ETA | Countdown |
 | Printing with no ETA yet | `Printing` |
-| Paused | `Paused` |
-| Silent | `Connection lost` |
-| Finished | The outcome word |
+| Paused | `Paused`, or the fault, in `status` (in `trailing` with segments) |
+| Silent | `Connection lost`, likewise |
+| Finished | The outcome word, likewise |
 
 `status` is sent in every phase anyway, because it is the fallback the widget
 reaches for when a countdown lapses. That covers an overrunning ETA for free,

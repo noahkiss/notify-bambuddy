@@ -41,6 +41,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 import time
 from typing import Any, Optional
 
@@ -76,6 +77,7 @@ from .notify_client import (
     NotifyDisabled,
     NotifyError,
     NotifyGone,
+    NotifyRateLimited,
     NotifyThrottled,
     NotifyTransportError,
     NotifyUpstreamError,
@@ -84,6 +86,9 @@ from .notify_client import (
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+#: Apple's ceiling on a Live Activity, from the moment it starts.
+APPLE_CEILING_SECONDS = 8 * 3600
 
 #: How many REPLACEMENT tiles one print may be given after losing one.
 #: Counts only replacements, never the first start and never an eight-hour
@@ -95,13 +100,14 @@ log = logging.getLogger(__name__)
 #: replacements is not going to be fixed by a third.
 MAX_RECREATE_ATTEMPTS = 2
 
-#: The one tile loss that tells us NOTHING about what is on the Lock Screen.
-#: Notify reaps a tile it has not seen confirmed after about fifteen minutes,
-#: and only the Notify app confirms, and only while it is open. So this reason
-#: covers both "iOS never showed it" and "iOS showed it and the app was shut",
-#: and the gateway cannot tell them apart either. Every OTHER loss reason is
-#: the gateway stating it no longer holds the tile, which does clear the
-#: screen. See `_should_recreate_tile`.
+#: The gateway's reason for a tile whose token never came back within its
+#: fifteen-minute window. Usually it never appeared at all: the device's start
+#: credential was stale, which happens after an app update until the app is
+#: opened once. If it DID appear, it does not stay: the next time the Notify
+#: app runs, the gateway pushes an end to any tile whose row is already over,
+#: and the app itself ends any tile the gateway no longer lists as live. So a
+#: replacement risks, at worst, a duplicate that lasts until that next launch.
+#: Kept as a named reason for the logs and the repeated-reap warning.
 TILE_LOSS_AMBIGUOUS = "never-started"
 
 #: How long a printer must keep reporting an inactive state (FINISH/FAILED/
@@ -189,17 +195,6 @@ class Coordinator:
         #: loudly because no amount of retrying will help.
         self._never_started_reaps: int = 0
 
-        #: True once ANY tile has been confirmed by the Notify app on this
-        #: device. That is what makes non-confirmation informative: on a device
-        #: that confirms, a tile which went unconfirmed really did not arrive,
-        #: so replacing it cannot duplicate anything. See
-        #: `_should_recreate_tile`.
-        #:
-        #: Starts False every run and is never persisted, so a restart is
-        #: cautious until it sees a confirmation. That is the safe direction:
-        #: the cost of being wrong here is a second tile on the Lock Screen
-        #: that nothing can remove.
-        self._device_confirms_tiles: bool = False
 
         #: Tiles whose end could not be delivered, keyed by activity id.
         #: SEPARATE from `_sessions` on purpose: that is keyed by serial and
@@ -333,21 +328,17 @@ class Coordinator:
                         "Tile for printer %s was dismissed while we were down; not recreating",
                         session.serial,
                     )
-                elif reason == "never-started":
-                    # The same rule the runtime path applies. The gateway
-                    # reports this when it believes a tile never reached the
-                    # device, but a tile iOS displays while the app stays
-                    # closed is never reported back either, so the two are
-                    # indistinguishable. Recreating produced a second tile
-                    # beside a live one on real hardware. A restart must not
-                    # reintroduce the symptom a release was cut to fix.
-                    log.info(
-                        "Tile for printer %s was reported never-started; not recreating it, "
-                        "because a tile iOS is displaying looks the same from here",
-                        session.serial,
-                    )
-                    self._store.record_dismissal(session.serial, session.job_name)
                 else:
+                    # Everything else, `never-started` and `dead-token`
+                    # included, is a tile that is gone without anyone asking
+                    # for it to be. The session is not re-adopted, so the next
+                    # live reading opens a fresh one with a tile.
+                    #
+                    # `never-started` used to record a DISMISSAL here, which is
+                    # far stronger than declining a replacement: it refuses the
+                    # whole creation path until the job changes, so a print
+                    # restarted across a reap lost its tile AND every alert,
+                    # and a reprint of the same file within three days did too.
                     log.info(
                         "Tile for printer %s is gone (%s); a new one will be created if the "
                         "print is still running", session.serial, reason or "unknown reason",
@@ -1166,16 +1157,26 @@ class Coordinator:
             self._forget(session)
             return
         except NotifyThrottled as exc:
-            # Apple is silently discarding push-to-start for this device.
-            # Waiting alone does NOT clear it: the counter resets when the
-            # phone reports a fresh start credential, which happens when the
-            # user opens the Notify app.
+            # The gateway's start throttle. It clears by itself once
+            # `retry_after` has passed, and its message already says whether
+            # opening the Notify app could shorten that for this particular
+            # device right now. An earlier version replaced that message with
+            # a fixed "open the app" instruction, which was wrong whenever no
+            # start was pending for the app to re-drive.
             self._block_starts(
                 now, exc.retry_after,
-                "Notify is refusing new tiles for this device because recent ones never "
-                "appeared. Open the Notify app once on the phone to refresh its credential, "
-                f"then wait {exc.retry_after // 60} minutes.",
-                session, level=logging.ERROR,
+                f"Notify is holding back new tiles for this device: {exc}",
+                session, level=logging.WARNING,
+            )
+            return
+        except NotifyRateLimited as exc:
+            # A limit in front of the gateway, applying to this host. Nothing
+            # about the device, and nothing the app can change.
+            self._block_starts(
+                now, exc.retry_after,
+                f"Notify is rate limiting requests from this host; trying again in "
+                f"about {max(1, exc.retry_after)} seconds",
+                session, level=logging.WARNING,
             )
             return
         except NotifyDeviceNotReady as exc:
@@ -1199,7 +1200,47 @@ class Coordinator:
                 session, level=logging.ERROR,
             )
             return
-        except (NotifyDisabled, NotifyUpstreamError) as exc:
+        except NotifyUpstreamError as exc:
+            if exc.delivery_state == "unknown" and exc.activity_id:
+                # Apple never answered, so the tile may be appearing right
+                # now, and the gateway kept its row for exactly that reason.
+                # Bind it like any other start: the verify check that follows
+                # finds out, and if it never appears the gateway reaps it as
+                # never-started and that path takes over. Discarding the id,
+                # as this used to, left the row unowned for the pre-start sweep
+                # to end later, possibly after the tile had appeared.
+                log.warning(
+                    "Notify could not confirm the start for %s with Apple; tile %s may "
+                    "still appear and is being followed", session.serial, exc.activity_id,
+                )
+                # The response carries no expiry, and without one the
+                # rollover falls back to the SESSION's age: a tile adopted
+                # late in a long print would be rolled over seconds after it
+                # started. It was started just now, so Apple's ceiling runs
+                # from now, which is what the gateway would have reported.
+                expires = datetime.fromtimestamp(now + APPLE_CEILING_SECONDS, timezone.utc)
+                self._adopt(session, exc.activity_id, expires.isoformat(), now, content)
+                return
+            # Nothing exists. Wait as long as the gateway asks, when it asks.
+            #
+            # When it does not, the usual cause is a dead start credential,
+            # and the gateway's message says to open the app. A retry against
+            # that is answered locally with a 409 and costs nothing, while a
+            # long hold here would delay tiles well after the user had done
+            # as asked, so the ordinary interval applies. Logged as an error
+            # only when the gateway actually said "not delivered", because a
+            # 502 with no such body is a proxy in front of it having a moment.
+            if exc.retry_after is not None:
+                delay, level = exc.retry_after, logging.WARNING
+            elif exc.delivery_state == "not-delivered":
+                delay, level = SERVICE_BACKOFF_SECONDS, logging.ERROR
+            else:
+                delay, level = SERVICE_BACKOFF_SECONDS, logging.WARNING
+            self._block_starts(
+                now, delay, f"Notify could not start a tile: {exc}", session, level=level,
+            )
+            return
+        except NotifyDisabled as exc:
             self._block_starts(
                 now, SERVICE_BACKOFF_SECONDS,
                 f"Notify cannot start tiles right now ({exc}); retrying later",
@@ -1218,30 +1259,22 @@ class Coordinator:
     def _should_recreate_tile(self, session: SessionState, status: PrinterStatus) -> bool:
         """Whether a live print that has lost its tile should be given another.
 
-        The whole difficulty is that "the tile is gone" and "the screen is
-        clear" are not the same statement, and only some losses make both.
+        Yes, whenever the print is live and has budget left, with one exception:
+        a tile ended deliberately from outside stays ended.
 
-        When the gateway says it no longer holds the tile, or recovery finds
-        none, the Lock Screen really is clear and a replacement is plainly
-        right. When the gateway REAPS a tile as never-started it has said
-        nothing of the kind: that reason covers a tile iOS never displayed and
-        a tile iOS displayed while the Notify app was closed, which is the only
-        state in which a tile goes unconfirmed. Replacing in the second case
-        puts two tiles for one printer on the Lock Screen.
+        This used to refuse after a never-started reap unless this run had
+        already seen the device confirm a tile, on the stated grounds that a
+        reaped tile might be on screen and that nothing could remove it. The
+        second half was wrong. Per the gateway, the next time the Notify app
+        runs it ends any tile whose row is already over, and the app ends any
+        tile the gateway no longer lists as live. Refusing therefore traded a
+        duplicate lasting until the next app launch for a print with no tile
+        at all for the rest of the job, because that same launch, which the
+        logs tell the user to make, removes the reaped tile and leaves nothing
+        in its place.
 
-        An earlier version of this claimed the pre-start sweep made that safe.
-        It does not. `_reap_stale_tiles` builds its candidates from
-        `list_device`, which returns only LIVE tiles, and a reaped tile is by
-        definition already ended in the gateway's own records. It can never
-        appear in that list, so the sweep cannot clear it. There is no request
-        that removes it either. Nothing here can take that tile off the screen.
-
-        So for that one reason, and only that one, this asks a different
-        question: does this device confirm tiles at all? If it does, then a
-        tile that went unconfirmed really was not delivered, and replacing is
-        safe. If nothing has ever been confirmed, non-confirmation carries no
-        information, and the honest answer is to leave the screen alone and
-        tell the user to open the app, which is the only thing that fixes it.
+        The cost of replacing is bounded twice over: by MAX_RECREATE_ATTEMPTS,
+        and by the start throttle, which `_start_tile` honours.
         """
         if session.activity_id is not None:
             return False
@@ -1258,8 +1291,6 @@ class Coordinator:
         # Ended deliberately from outside. Putting it back would be arguing
         # with whoever ended it.
         if session.tile_loss == "script":
-            return False
-        if session.tile_loss == TILE_LOSS_AMBIGUOUS and not self._device_confirms_tiles:
             return False
         return True
 
@@ -1594,14 +1625,16 @@ class Coordinator:
         """Decide what a 410 actually meant.
 
         The whole point of this method: `dismissed` is the user's decision and
-        must be honoured forever, while `overdue`, `abandoned`, `expired` and
-        `overdue`, `abandoned` and `expired` are the gateway tidying up a tile
+        must be honoured forever, while `overdue`, `abandoned` and `expired`
+        are the gateway tidying up a tile
         whose print is very possibly still running. Treating those like a
         dismissal is how an integration silently stops working for a printer
         whose ETA happened to overrun by half an hour.
 
-        `never-started` is its own case and is handled separately below,
-        because recreating on it duplicates a tile that is already on screen.
+        `never-started` and `dead-token` are handled separately below. Both
+        are replaced, but on the next reading rather than here, so that the
+        replacement is built from fresh fields and counted against
+        MAX_RECREATE_ATTEMPTS.
         """
         classified = await self._client.classify_gone(session.activity_id or "", error)
         reason = classified.end_reason
@@ -1656,48 +1689,53 @@ class Coordinator:
             self._store.save_session(session)
             return
 
+        if reason == "dead-token":
+            # No tile ever existed: the device's start credential was refused
+            # while this one was still pending. Handed to the next reading, so
+            # the replacement is counted against MAX_RECREATE_ATTEMPTS like a
+            # never-started one. A start against a dead credential is answered
+            # by the gateway's 409, whose message tells the user to open the
+            # app, so this does not loop.
+            log.info(
+                "Notify never managed to show the tile for %s: the device's start "
+                "credential was refused. A replacement follows.", session.serial,
+            )
+            session.delivery = Delivery.ENDED
+            session.activity_id = None
+            session.tile_loss = "dead-token"
+            self._store.save_session(session)
+            return
+
         if reason == "never-started":
-            # The gateway believes this tile never reached the device, and is
-            # tidying its own record away. Recreating here is what produced a
-            # SECOND tile on a real phone: the first one was on screen the
-            # whole time, because a tile that iOS displayed but the app never
-            # reported back still looks "never started" from the server side.
+            # The tile's token never came back within the gateway's fifteen
+            # minute window. Usually it never appeared: the device's start
+            # credential was stale, which follows an app update or reinstall
+            # until the app is opened once.
             #
-            # So this is the one reap that must not be retried. If the tile
-            # really never appeared, a replacement would hit exactly the same
-            # wall; if it did appear, a replacement duplicates it, and NOTHING
-            # can take it off the screen: the pre-start sweep reads
-            # `list_device`, which lists only LIVE tiles, and a reaped tile is
-            # already ended in the gateway's records. `_should_recreate_tile`
-            # therefore replaces this one only on a device that has proved it
-            # confirms tiles, which is what makes non-confirmation mean
-            # something. Either way
-            # the session keeps running and the next PRINT gets a fresh tile.
-            # Counted per device, because a SECOND one is no longer bad luck.
-            # The gateway reaps a tile it has not seen confirmed after about
-            # fifteen minutes, and only the Notify app confirms, and only while
-            # it is open. So a device whose app is never opened loses every
-            # tile on a timer, and each loss drives the gateway's own refusal
-            # window up: minutes, then hours. Nothing here can fix that, and
-            # saying so once quietly is not enough.
+            # Handed to the next reading rather than recreated here, so the
+            # replacement is built from fresh fields and counted against
+            # MAX_RECREATE_ATTEMPTS. See `_should_recreate_tile` for why it IS
+            # replaced: an earlier version refused, believing a reaped tile
+            # could sit on the screen forever. It cannot. The next run of the
+            # Notify app ends it.
+            #
+            # Counted per device, because a second one in a run is no longer
+            # bad luck, and each one also lengthens the gateway's start
+            # throttle.
             self._never_started_reaps += 1
             if self._never_started_reaps >= 2:
                 log.error(
                     "Notify has now reaped %d tiles for this device as never-started. "
-                    "This is what happens when the Notify app has not been opened: it "
-                    "confirms tiles only while it is open, the gateway gives up on an "
-                    "unconfirmed tile after about fifteen minutes, and each one pushes "
-                    "its refusal window higher. OPEN THE NOTIFY APP ONCE ON THE DEVICE. "
-                    "Nothing this service does can substitute for that.",
+                    "That usually means the device's Live Activity start credential is "
+                    "stale, which happens after the Notify app is updated or reinstalled. "
+                    "Open the Notify app once on the device so it reports a fresh one.",
                     self._never_started_reaps,
                 )
             else:
                 log.info(
-                    "Notify reaped the tile for %s as never-started. Whether it is on "
-                    "your Lock Screen or was never delivered, nothing here can tell, "
-                    "and nothing here can remove it. Open the Notify app once so it can "
-                    "confirm tiles; a device that confirms gets replacements "
-                    "automatically.",
+                    "Notify reaped the tile for %s as never-started: its token never came "
+                    "back. Replacing it. If the original did appear, the Notify app removes "
+                    "it the next time it runs.",
                     session.serial,
                 )
             session.delivery = Delivery.ENDED
@@ -2054,10 +2092,6 @@ class Coordinator:
                 # The device is receiving tiles. Whatever trouble there was is
                 # over, so the escalation starts from scratch next time.
                 self._unconfirmed_starts = 0
-                # And, separately, this device has now PROVED it confirms. From
-                # here on a tile that goes unconfirmed is real evidence it was
-                # not delivered, which is what makes replacing one safe.
-                self._device_confirms_tiles = True
                 continue
 
             if state.state != "starting":
@@ -2086,11 +2120,17 @@ class Coordinator:
             # the only party that can see whether the device is receiving
             # them, and it is already honoured elsewhere.
             self._unconfirmed_starts += 1
+            # Not "the app only confirms while it is open", which this used to
+            # say. Push-to-start launches the Notify app in the background, and
+            # it reports a new tile's token from there, so a tile that appears
+            # is normally confirmed within seconds. Still unconfirmed now means
+            # either Apple has not delivered it yet (it may, any time inside
+            # the gateway's fifteen-minute window) or the start credential is
+            # stale and it never will.
             log.warning(
-                "Tile %s for %s has not been confirmed by the Notify app. If it IS on your "
-                "Lock Screen, nothing is wrong: the app only confirms tiles while it is "
-                "open. If no tile appeared, open the Notify app once on the device to "
-                "refresh its start credential.",
+                "Tile %s for %s has not been confirmed yet. If no tile appeared on the "
+                "device, open the Notify app once so it can report a fresh start "
+                "credential; that is usually needed after the app is updated.",
                 activity_id, session.serial,
             )
             continue

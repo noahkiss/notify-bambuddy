@@ -167,7 +167,9 @@ class NotifyGone(NotifyError):
     The reasons and what they mean for a caller:
 
       dismissed      the user swiped the tile away. Final. Do not recreate.
-      dead-token     the tile vanished from the device. Treat as dismissed.
+      dead-token     NO TILE EVER EXISTED. The device's start credential was
+                     refused by Apple while the row was still waiting for its
+                     tile, so nothing reached the screen. Not a dismissal.
       script         this service ended it. Expected; nothing to do.
       never-started  the push never produced a tile on the phone.
       overdue        the countdown lapsed 30 minutes ago with no end call.
@@ -185,10 +187,20 @@ class NotifyGone(NotifyError):
         self.end_reason = end_reason
 
     #: End reasons that mean the USER does not want this tile. Honour them.
-    #: Every other reason (`never-started`, `overdue`, `abandoned`, `expired`,
-    #: and anything the gateway adds later) means the tile was reaped out from
-    #: under a print that may still be running, and is handled by recreating.
-    USER_DISMISSED = frozenset({"dismissed", "dead-token"})
+    #: Every other reason (`never-started`, `dead-token`, `overdue`,
+    #: `abandoned`, `expired`, and anything the gateway adds later) means the
+    #: tile was lost out from under a print that may still be running, and is
+    #: handled by recreating.
+    #:
+    #: `dead-token` used to be in here, on the belief that it meant a tile had
+    #: vanished from the phone. The gateway sets it only when the device's
+    #: START credential is refused while the row is still `starting` with no
+    #: tile token, which is to say no tile ever existed (Notify's
+    #: live-activity-prune.js). Recording that as a swipe silenced the printer
+    #: for the rest of a print the user had never seen a tile for. A tile that
+    #: vanishes while alive does not end its row at all; its updates simply
+    #: stop reaching it.
+    USER_DISMISSED = frozenset({"dismissed"})
 
     @property
     def user_dismissed(self) -> bool:
@@ -199,16 +211,26 @@ class NotifyGone(NotifyError):
 
 
 class NotifyThrottled(NotifyError):
-    """429. Apple is silently discarding push-to-start for this device.
+    """429 from the Live Activity start throttle.
 
-    This is the gateway protecting the device's spawn budget after it noticed
-    that starts are not producing tiles. It escalates: 30 minutes after 2
-    confirmed losses, 3 hours after 4, 6 hours after 6.
+    The gateway noticed that recent starts for this device were accepted and
+    never produced a tile, which usually means the app was updated or
+    reinstalled and the gateway holds a stale start credential. It protects the
+    device's start budget by refusing further starts for an escalating quiet
+    period.
 
-    Critically, WAITING ALONE DOES NOT FIX IT. The counter resets when the
-    phone reports a fresh push-to-start credential, which happens when the
-    user opens the Notify app. So the correct handling is: stop starting
-    tiles, honour `retry_after`, and tell the user to open the app once.
+    WAITING CLEARS IT: the gate is elapsed time. Opening the Notify app can
+    shorten it two ways. It reports the token of any tile actually on the
+    device, which resets the counter outright, and it reports a fresh start
+    credential, which re-drives a start still pending inside the gateway's
+    fifteen-minute window (reported as `openingTheAppMayHelp`). An earlier
+    version told every user that only opening the app would help; that was
+    wrong whenever nothing was on the device or pending. The gateway's
+    `message` gives the advice for the case at hand and is surfaced as it
+    stands.
+
+    Only built from a 429 that carries `retryAfterSeconds`, which is how the
+    gateway's own throttle answers. Any other 429 is `NotifyRateLimited`.
     Updates and ends are never gated by this.
     """
 
@@ -220,19 +242,131 @@ class NotifyThrottled(NotifyError):
         try:
             return max(0, int(value))
         except (TypeError, ValueError):
-            # A sane default when the body did not say. The shortest real
-            # quiet period the gateway imposes is 30 minutes.
             return 1800
 
+    @property
+    def opening_app_may_help(self) -> bool:
+        return bool(self.body.get("openingTheAppMayHelp"))
 
-class NotifyUpstreamError(NotifyError):
-    """502 on a start. Apple could not be reached and NOTHING was created.
 
-    Unambiguously safe to retry: the gateway deletes its provisional row
-    before answering, so there is no orphan tile to reconcile against.
+class NotifyRateLimited(NotifyError):
+    """A 429 that is NOT the Live Activity throttle.
+
+    The gateway issues its own 429s only on device registration and on Live
+    Activity starts, and the latter always say how long to wait. Anything else
+    is an edge limit in front of the gateway, applying to this host rather
+    than to the device. Treating it as the start throttle sent users to open
+    the app, which cannot help, and blocked starts for half an hour.
     """
 
     retryable = True
+
+    def __init__(self, message: str, status: Optional[int] = None,
+                 body: Optional[dict] = None, retry_after: Optional[int] = None) -> None:
+        super().__init__(message, status, body)
+        self.retry_after = retry_after if retry_after is not None else 60
+
+
+class NotifyUpstreamError(NotifyError):
+    """502 on a start: Apple did not accept it cleanly. Two different cases.
+
+    `deliveryState: "not-delivered"`. Nothing reached the phone; the gateway
+    deleted its row, so starting again cannot duplicate anything. It carries
+    `retryAfterSeconds` ONLY when waiting is the remedy (an Apple outage or
+    rate limit). Its absence means the identical request will fail the same
+    way, typically a dead start credential (open the app) or a permanent
+    rejection, and the gateway's `message` says which.
+
+    `deliveryState: "unknown"`. Apple never answered: a timeout or a dropped
+    connection, so the start may have been accepted and a tile may be
+    appearing right now. The gateway KEEPS the row and returns its
+    `activityId` so it can be followed. Treating this as "nothing was created",
+    as an earlier version did, threw that id away; the pre-start sweep later
+    found the row and ended a tile that had appeared, or started a second one
+    beside it.
+    """
+
+    retryable = True
+
+    @property
+    def delivery_state(self) -> str:
+        return str(self.body.get("deliveryState") or "")
+
+    @property
+    def activity_id(self) -> Optional[str]:
+        value = self.body.get("activityId")
+        return str(value) if value else None
+
+    @property
+    def retry_after(self) -> Optional[int]:
+        value = self.body.get("retryAfterSeconds")
+        try:
+            return max(0, int(value)) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+
+class NotifyDeliveryFailed(NotifyError):
+    """An ordinary notification the gateway accepted but could not deliver.
+
+    `/notify-json` answers every delivery failure with HTTP 400 and the same
+    `error: "Failed to send notification"`, putting the actual reason in
+    `apnsStatus` and `apnsError`. Read as an ordinary 400 that became a log
+    line saying only "Failed to send notification", indistinguishable from a
+    malformed request, and never the one thing worth saying.
+
+    For a browser or a Mac that matters most, because notifications are all
+    this service can send there. A browser whose push subscription has been
+    retired fails EVERY alert until it is renewed, and the only way anyone
+    finds out is this message.
+    """
+
+    #: The gateway's own failure codes, which arrive as strings in
+    #: `apnsStatus` (Notify server.js `deliverToDevice`), and what to do.
+    HINTS = {
+        "DEAD_SUBSCRIPTION": "the browser's push subscription has been retired. Open the "
+                             "Notify web app in that browser once to renew it",
+        "DEAD_TOKEN": "the device's push token has been retired. Open the Notify app on "
+                      "the device once so it registers again",
+        "MAC_TOPIC_UNSET": "the Notify gateway cannot push to Mac devices yet. Nothing to "
+                           "change on this side",
+    }
+
+    @property
+    def reason(self) -> str:
+        return str(self.body.get("apnsStatus") or "")
+
+    @property
+    def hint(self) -> str:
+        if self.reason in self.HINTS:
+            return self.HINTS[self.reason]
+        detail = self.body.get("apnsError")
+        if isinstance(detail, dict):
+            detail = detail.get("reason") or json.dumps(detail, sort_keys=True)
+        if str(self.reason) == "410" or detail == "Unregistered":
+            # Apple's word for an iPhone and the push service's for a browser.
+            return ("the device is no longer registered for notifications. Open Notify "
+                    "on it once (the app on an iPhone, the web app in a browser) so it "
+                    "registers again")
+        parts = [p for p in (f"status {self.reason}" if self.reason else "",
+                             str(detail) if detail else "") if p]
+        return "the gateway could not deliver it" + (f" ({', '.join(parts)})" if parts else "")
+
+    @property
+    def actionable(self) -> bool:
+        """Whether this will repeat on every alert until someone acts.
+
+        A retired subscription or token does; an Apple outage or a timeout
+        does not, and paging someone at error level for those is noise.
+        """
+        detail = self.body.get("apnsError")
+        if isinstance(detail, dict):
+            detail = detail.get("reason")
+        return (self.reason in ("DEAD_SUBSCRIPTION", "DEAD_TOKEN")
+                or str(self.reason) == "410" or detail == "Unregistered")
+
+    def __str__(self) -> str:
+        return f"Notify could not deliver the notification: {self.hint}"
 
 
 class NotifyDisabled(NotifyError):
@@ -284,8 +418,11 @@ class ActivityStatus:
         """True once the tile is known to have appeared on the phone.
 
         `starting` means the push was accepted but the device has not yet
-        reported back. A tile still `starting` a minute and a half after the
-        start is very probably never going to appear.
+        reported the tile's token back. That is not evidence of failure at a
+        minute and a half, or at ten: the gateway sends the start with an APNs
+        expiry equal to its fifteen-minute window, so Apple may deliver it and
+        the tile may appear at any point inside it. Only after that window does
+        the gateway reap it as never-started.
         """
         return self.state == "active"
 
@@ -647,6 +784,11 @@ class NotifyClient:
         message = body.get("message") or body.get("error") or exc.reason or f"HTTP {status}"
 
         if status == 400:
+            # A delivery failure on /notify-json reuses 400 and puts the real
+            # reason in apnsStatus. Recognised by that field rather than by
+            # the error string, which is prose and could be reworded.
+            if "apnsStatus" in body or "apnsError" in body:
+                return NotifyDeliveryFailed(message, status, body)
             return NotifyValidationError(message, status, body)
         if status == 403:
             return NotifyAuthError(message, status, body)
@@ -659,7 +801,17 @@ class NotifyClient:
         if status == 410:
             return NotifyGone(message, status, body)
         if status == 429:
-            return NotifyThrottled(message, status, body)
+            # Only the gateway's own start throttle says how long to wait in
+            # its body. Everything else is a limit in front of the gateway.
+            if "retryAfterSeconds" in body:
+                return NotifyThrottled(message, status, body)
+            retry_after = None
+            try:
+                header = exc.headers.get("Retry-After") if exc.headers else None
+                retry_after = max(0, int(header)) if header else None
+            except (TypeError, ValueError):
+                retry_after = None
+            return NotifyRateLimited(message, status, body, retry_after=retry_after)
         if status == 502:
             return NotifyUpstreamError(message, status, body)
         if status == 503:

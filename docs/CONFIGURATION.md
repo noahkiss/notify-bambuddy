@@ -292,7 +292,7 @@ necessary.
 | `PROGRESS_MIN_INTERVAL` | `15` | Floor between routine progress pushes. Notify coalesces to one push per 10 seconds anyway; phase changes bypass this. |
 | `KEEPALIVE_INTERVAL` | `1200` | **Must stay under 2 hours.** Notify ends any tile without an end time that has gone 2 hours without an update, and a paused or ETA-unknown print is exactly that shape. |
 | `TERMINAL_HOLD` | `120` | How long a finished outcome is held before the tile ends, so a contradicting event can correct it. Set to 0 to end immediately, at the cost of occasionally showing "Cancelled" for a print that succeeded. |
-| `START_VERIFY_AFTER` | `90` | When to check whether the gateway has heard that a started tile reached the phone. Informational only: an unconfirmed tile is logged and nothing else, because the app confirms tiles only while it is open and a healthy tile is routinely unconfirmed. |
+| `START_VERIFY_AFTER` | `90` | When to check whether the gateway has heard that a started tile reached the phone. Informational only: an unconfirmed tile is logged and nothing else, because the gateway sends a start with an expiry equal to its fifteen-minute window, so Apple may deliver it and the tile may appear at any point inside that window. |
 | `ROLLOVER_AFTER` | `27000` | 7.5 hours. Apple ends every tile at 8 hours (28800) regardless; rolling over early avoids racing that. |
 | `PAUSE_SUPPRESS` | `15` | Ignore a pause this soon after a tile is created. BambuBuddy's plate detection can pause a print seconds after it starts. |
 

@@ -19,6 +19,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from typing import Optional
+
 import pytest
 
 from notify_bambuddy.notify_client import (
@@ -29,6 +31,8 @@ from notify_bambuddy.notify_client import (
     NotifyDeviceNotReady,
     NotifyDisabled,
     NotifyGone,
+    NotifyDeliveryFailed,
+    NotifyRateLimited,
     NotifyThrottled,
     NotifyTransportError,
     NotifyUpstreamError,
@@ -57,10 +61,13 @@ class Handler(BaseHTTPRequestHandler):
             "content_type": self.headers.get("Content-Type"),
             "user_agent": self.headers.get("User-Agent"),
         })
-        status, body = NEXT_RESPONSE[0]
+        status, body = NEXT_RESPONSE[0][:2]
+        extra_headers = NEXT_RESPONSE[0][2] if len(NEXT_RESPONSE[0]) > 2 else {}
         payload = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        for name, value in extra_headers.items():
+            self.send_header(name, value)
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -92,8 +99,8 @@ def run(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
 
-def respond(status: int, body: dict) -> None:
-    NEXT_RESPONSE[0] = (status, body)
+def respond(status: int, body: dict, headers: Optional[dict] = None) -> None:
+    NEXT_RESPONSE[0] = (status, body, headers or {})
 
 
 # ---------------------------------------------------------------------------
@@ -271,20 +278,89 @@ def test_a_throttle_reports_how_long_to_wait(client):
     assert caught.value.retry_after == 1800
 
 
-def test_a_throttle_without_a_body_falls_back_to_the_shortest_real_quiet_period(client):
+def test_a_429_without_a_wait_in_its_body_is_not_the_start_throttle(client):
+    """The gateway's own start throttle always says how long to wait. A 429
+    that does not is a limit in front of the gateway, applying to this host,
+    and treating it as the throttle sent users to open the app for nothing and
+    blocked starts for half an hour."""
+    respond(429, {"error": "Too Many Requests"}, headers={"Retry-After": "45"})
+    with pytest.raises(NotifyRateLimited) as caught:
+        run(client.start({"title": "x"}))
+    assert caught.value.retry_after == 45
+    assert not isinstance(caught.value, NotifyThrottled)
+
+
+def test_a_bare_429_with_no_retry_after_waits_a_minute(client):
     respond(429, {"error": "Too Many Requests"})
+    with pytest.raises(NotifyRateLimited) as caught:
+        run(client.start({"title": "x"}))
+    assert caught.value.retry_after == 60
+
+
+def test_the_start_throttle_carries_the_gateways_own_advice(client):
+    """Whether opening the app can help depends on whether a start is still
+    pending, and only the gateway knows. Its message says which."""
+    respond(429, {"error": "Too Many Requests", "retryAfterSeconds": 1200,
+                  "openingTheAppMayHelp": False,
+                  "message": "Opening the app will not shortcut this: there is no "
+                             "pending tile left to retry. Please wait about 20 minute(s)."})
     with pytest.raises(NotifyThrottled) as caught:
         run(client.start({"title": "x"}))
-    assert caught.value.retry_after == 1800
+    assert caught.value.retry_after == 1200
+    assert caught.value.opening_app_may_help is False
+    assert "will not shortcut" in str(caught.value)
 
 
-def test_a_bad_gateway_on_start_is_safe_to_retry(client):
-    """The gateway deletes its provisional row before answering, so there is
-    no orphan tile to reconcile against."""
-    respond(502, {"error": "Bad Gateway", "message": "Apple could not be reached"})
+def test_a_bad_gateway_that_was_not_delivered_is_safe_to_retry(client):
+    """`not-delivered` means the gateway deleted its row: nothing exists, so
+    starting again cannot duplicate anything. No `retryAfterSeconds` is the
+    gateway saying the identical request will fail identically."""
+    respond(502, {"error": "Bad Gateway", "deliveryState": "not-delivered",
+                  "message": "Apple rejected the Live Activity start"})
     with pytest.raises(NotifyUpstreamError) as caught:
         run(client.start({"title": "x"}))
-    assert caught.value.retryable
+    assert caught.value.delivery_state == "not-delivered"
+    assert caught.value.activity_id is None
+    assert caught.value.retry_after is None
+
+
+def test_a_bad_gateway_with_unknown_delivery_hands_back_the_tile_id(client):
+    """Apple never answered, so the tile may be appearing. The gateway keeps
+    the row and returns its id, which must not be thrown away."""
+    respond(502, {"error": "Bad Gateway", "deliveryState": "unknown",
+                  "activityId": "LA7Q2ZKM",
+                  "message": "Apple could not be reached and delivery is unknown."})
+    with pytest.raises(NotifyUpstreamError) as caught:
+        run(client.start({"title": "x"}))
+    assert caught.value.delivery_state == "unknown"
+    assert caught.value.activity_id == "LA7Q2ZKM"
+
+
+@pytest.mark.parametrize("apns_status, says", [
+    ("DEAD_SUBSCRIPTION", "Notify web app"),
+    ("DEAD_TOKEN", "Open the Notify app"),
+    ("MAC_TOPIC_UNSET", "Mac devices"),
+    (410, "no longer registered"),
+])
+def test_an_undeliverable_alert_says_what_to_do(client, apns_status, says):
+    """Every delivery failure on /notify-json is a 400 reading only "Failed to
+    send notification", with the reason in apnsStatus. For a browser, alerts
+    are the only output, so a retired subscription silently failed every one
+    and the log never said to reopen the web app."""
+    respond(400, {"success": False, "error": "Failed to send notification",
+                  "apnsStatus": apns_status, "apnsError": {"reason": "Unregistered"}
+                  if apns_status == 410 else "detail"})
+    with pytest.raises(NotifyDeliveryFailed) as caught:
+        run(client.notify("text", "title", "printer"))
+    assert says in str(caught.value)
+    assert "Failed to send notification" not in str(caught.value)
+
+
+def test_an_ordinary_400_is_still_a_validation_error(client):
+    """Only a body carrying the delivery fields is a delivery failure."""
+    respond(400, {"error": "Bad Request", "message": "title too long"})
+    with pytest.raises(NotifyValidationError):
+        run(client.notify("text", "title", "printer"))
 
 
 def test_the_kill_switch_is_transient(client):
