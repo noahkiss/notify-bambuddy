@@ -3,6 +3,46 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.5.1
+
+### Fixed
+
+- **iPhones set up since Notify 6.09.02 were refused at startup** (#1). A fresh
+  install of the Notify app now mints a 16-character device id, `IO` followed
+  by 14 capital letters and digits, and this service recognised only the
+  older 8-character shape for a phone. Everyone who had installed or
+  reinstalled the app since then got "is not a Notify device id" and the
+  container exited, with credentials the gateway was happy to accept.
+  Reported, with a careful diagnosis, by [@do-gugan](https://github.com/do-gugan).
+
+  All five of Notify's namespaces are now recognised, using the gateway's own
+  patterns character for character:
+
+  | Id | What it is | Tiles |
+  |---|---|---|
+  | 8 characters | iPhone or iPad, from before 6.09.02 | yes |
+  | `IO` + 14 | iPhone or iPad, from 6.09.02 on | yes |
+  | `WB` + 14 | browser subscription | no |
+  | `MC` + 14 | Mac | no |
+  | `GRP` + 5 | group | refused |
+
+  The three 16-character namespaces are the same length, so they are told
+  apart by prefix. The fix proposed in the issue widened the phone pattern to
+  any 16 capital letters and digits, which would also have accepted a Mac id as
+  able to host a tile. A legacy 8-character id that happens to start `IO`, `WB`
+  or `MC` is still read as a legacy id, matching how the gateway's own register
+  branches read it.
+
+- **A Mac can run this now.** `MC` ids were refused outright. They now run in
+  the same notifications-only mode as a browser, and the startup message says
+  which of the two it is.
+
+- **A browser id with a lowercase letter is refused here, with an explanation.**
+  The gateway mints `WB` ids in capitals only, so a lowercase one can never be
+  real. It used to pass this service's check and then fail at the gateway with
+  a bare "not found". The README's example browser id had lowercase letters in
+  it, which taught a format that cannot exist; it is fixed too.
+
 ## 0.5.0
 
 ### Added

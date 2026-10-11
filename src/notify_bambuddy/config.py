@@ -194,21 +194,34 @@ def _csv(name: str, env: dict) -> tuple[str, ...]:
 # Validation
 # ---------------------------------------------------------------------------
 
-#: Notify device ids come in two shapes, and which one you have decides what
-#: this service can actually do:
+#: Notify device ids come in five namespaces, and which one you have decides
+#: what this service can do. The patterns are the gateway's own, character for
+#: character, so a shape accepted here is one the gateway can have minted.
 #:
-#:   8 characters          an iOS device. Can host a Live Activity.
-#:   `WB` plus 14 more     a browser registered through the Notify web app.
-#:                         Ordinary notifications work unchanged; a Live
-#:                         Activity is an iOS Lock Screen feature and starting
-#:                         one on a browser returns an honest 400.
+#:   8 characters        an iPhone or iPad, from before app 6.09.02. Tiles.
+#:   `IO` plus 14        an iPhone or iPad installed from 6.09.02 on. Tiles.
+#:   `WB` plus 14        a browser, through the Notify web app. No tiles.
+#:   `MC` plus 14        a Mac. No tiles.
+#:   `GRP` plus 5        a group. Refused outright: a tile belongs to one
+#:                       device, and a group is not one.
 #:
-#: Both are accepted. A browser id puts the service into notifications-only
-#: mode rather than being refused, because "your print finished" is most of
-#: the value and there is no reason to withhold it from someone who reads
-#: their notifications in a browser.
-_IOS_DEVICE_ID_RE = re.compile(r"^[A-Z0-9]{8}$")
-_WEB_DEVICE_ID_RE = re.compile(r"^WB[A-Za-z0-9]{14}$")
+#: The 16-character namespaces are told apart by PREFIX and never by length,
+#: because all three are the same length. A legacy 8-character id that
+#: happens to start `IO`, `WB` or `MC` is still a legacy id: the gateway keys
+#: its own register branches on prefix AND length for exactly this reason.
+#:
+#: Every non-group shape is accepted. A browser or Mac id puts the service into
+#: notifications-only mode rather than being refused, because "your print
+#: finished" is most of the value and there is no reason to withhold it from
+#: someone who reads their notifications somewhere other than an iPhone.
+#:
+#: Before 0.5.1 only the 8-character shape was recognised for an iPhone, so
+#: every phone installed since app 6.09.02 was refused at startup with valid
+#: credentials (issue #1).
+_LEGACY_DEVICE_ID_RE = re.compile(r"^[A-Z0-9]{8}$")
+_IOS_DEVICE_ID_RE = re.compile(r"^IO[A-Z0-9]{14}$")
+_WEB_DEVICE_ID_RE = re.compile(r"^WB[A-Z0-9]{14}$")
+_MAC_DEVICE_ID_RE = re.compile(r"^MC[A-Z0-9]{14}$")
 
 #: Chips `TILE_METRICS` can show. `progress` and `eta` work on any install;
 #: the rest need BAMBUDDY_RICH_STATUS, and render as nothing without it rather
@@ -264,12 +277,16 @@ class Config:
     # --- Notify destination ------------------------------------------------
     device_id: str
     device_token: str
-    #: False for a browser subscription, which cannot host a Live Activity.
+    #: False for a browser or a Mac, neither of which can host a Live Activity.
     #: The service then runs notifications-only: it still follows every print
     #: and still says when one finishes or fails, it just never puts a tile on
     #: a Lock Screen. Derived from the shape of the device id, not configured
     #: separately, because there is nothing for a user to decide here.
     tiles_enabled: bool
+    #: "iphone", "browser" or "mac", from the id's namespace. Only for saying
+    #: plainly at startup WHY there will be no tile; `tiles_enabled` is what
+    #: everything else reads.
+    device_kind: str
 
     # --- Presentation ------------------------------------------------------
     symbol: str
@@ -441,7 +458,7 @@ def load_config(env: Optional[dict] = None) -> Config:
             "cannot host one."
         )
     # The GRP check comes FIRST and is separate, because a group id is exactly
-    # 8 characters of A-Z0-9 and therefore passes the device-shape check. The
+    # 8 characters of A-Z0-9 and therefore passes the legacy device-shape check. The
     # gateway itself distinguishes them by this prefix. Catching it here turns
     # what would otherwise be a uniform 403 saying "Invalid token or id not
     # found" into a message that tells the user what to do instead.
@@ -451,17 +468,22 @@ def load_config(env: Optional[dict] = None) -> Config:
             "on one specific iPhone or iPad, so it needs that device's own id and token from "
             "Settings -> Device in the Notify app."
         )
-    if _IOS_DEVICE_ID_RE.match(device_id):
-        tiles_enabled = True
+    if _LEGACY_DEVICE_ID_RE.match(device_id) or _IOS_DEVICE_ID_RE.match(device_id):
+        device_kind = "iphone"
     elif _WEB_DEVICE_ID_RE.match(device_id):
-        # A browser. Everything except the tile still works.
-        tiles_enabled = False
+        # Everything except the tile still works.
+        device_kind = "browser"
+    elif _MAC_DEVICE_ID_RE.match(device_id):
+        # Likewise. A Live Activity is an iPhone Lock Screen feature.
+        device_kind = "mac"
     else:
         raise ConfigError(
-            f"NOTIFY_DEVICE_ID {device_id!r} is not a Notify device id. Expected either 8 "
-            "characters (an iOS device, from Settings -> Device in the app) or 'WB' followed "
-            "by 14 more (a browser registered through the Notify web app)."
+            f"NOTIFY_DEVICE_ID {device_id!r} is not a Notify device id. Copy it exactly from "
+            "Settings -> Device in the Notify app. An iPhone or iPad id is 8 characters, or "
+            "'IO' followed by 14 more on newer installs; a browser id is 'WB' followed by 14; "
+            "a Mac id is 'MC' followed by 14. All use capital letters and digits only."
         )
+    tiles_enabled = device_kind == "iphone"
 
     # --- Presentation ------------------------------------------------------
     symbol = _str("NOTIFY_SYMBOL", env, "printer.fill")
@@ -564,9 +586,10 @@ def load_config(env: Optional[dict] = None) -> Config:
         )
 
     if not tiles_enabled and alerts == "off":
+        where = "a browser subscription" if device_kind == "browser" else "a Mac"
         raise ConfigError(
-            f"NOTIFY_DEVICE_ID {device_id!r} is a browser subscription, which cannot host a "
-            "Live Activity, and ALERTS is off. That combination leaves this service with "
+            f"NOTIFY_DEVICE_ID {device_id!r} is {where}, which cannot host a Live "
+            "Activity, and ALERTS is off. That combination leaves this service with "
             "nothing at all it is allowed to send. Set ALERTS to 'all' or 'problems', or "
             "use the device id of an iPhone or iPad from Settings -> Device in the app."
         )
@@ -588,6 +611,7 @@ def load_config(env: Optional[dict] = None) -> Config:
         device_id=device_id,
         device_token=device_token,
         tiles_enabled=tiles_enabled,
+        device_kind=device_kind,
         symbol=symbol,
         tint=tint,
         tile_progress=tile_progress,

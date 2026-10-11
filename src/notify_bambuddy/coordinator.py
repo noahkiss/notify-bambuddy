@@ -1070,7 +1070,7 @@ class Coordinator:
         """Announce a new print, by whatever means the destination supports.
 
         Usually that is creating the Live Activity, or queueing for a slot
-        when all five are taken. For a browser subscription there is no tile
+        when all five are taken. For a browser or a Mac there is no tile
         to create, so the announcement is an ordinary notification instead and
         the session goes on being tracked exactly as it would otherwise: it
         still advances, still reaches a terminal outcome, and still produces

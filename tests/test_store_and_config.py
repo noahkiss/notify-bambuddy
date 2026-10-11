@@ -132,10 +132,79 @@ def test_a_browser_with_alerts_off_is_rejected():
     assert "ALERTS" in str(caught.value)
 
 
-@pytest.mark.parametrize("bad", ["WB123", "WB123456789012345", "ABCD123", "abcd1234"])
+@pytest.mark.parametrize("bad", [
+    "WB123", "WB123456789012345", "ABCD123", "abcd1234",
+    # The 16-character namespaces are uppercase on the gateway, so a lowercase
+    # one cannot be a real id. Better refused here, with an explanation, than
+    # accepted and then refused by the gateway with a uniform 404.
+    "IOabcdefgh123456", "WBabcdefgh123456", "MCabcdefgh123456",
+    # 16 characters with no recognised prefix: shape alone must not be enough.
+    "ABCDEFGH12345678", "ZZABCDEFGH123456",
+    "IO1234567890123", "IO12345678901234X",
+])
 def test_a_device_id_of_the_wrong_shape_is_still_rejected(bad):
     with pytest.raises(ConfigError):
         load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID=bad))
+
+
+# --- Issue #1: Notify's id namespaces --------------------------------------
+#
+# The gateway mints five shapes. Every iPhone installed from app 6.09.02 on
+# gets an `IO` id, and until 0.5.1 this service accepted only the 8-character
+# shape for a phone, so every one of those was refused at startup with valid
+# credentials.
+
+
+def test_a_new_iphone_id_starting_io_gets_tiles():
+    """The reported bug. `IO` plus 14 is what a fresh install mints."""
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="IOYHABCDEFGH1234"))
+    assert config.tiles_enabled is True
+    assert config.device_kind == "iphone"
+
+
+def test_a_legacy_eight_character_id_still_gets_tiles():
+    """Phones that already hold an 8-character id keep it forever."""
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="ABCD1234"))
+    assert config.tiles_enabled is True
+
+
+@pytest.mark.parametrize("legacy", ["IO123456", "WB123456", "MC123456"])
+def test_an_eight_character_id_is_legacy_whatever_its_first_two_letters(legacy):
+    """Namespaces are told apart by prefix AND length. A legacy id that
+    happens to start with a reserved prefix is still a legacy id, which is how
+    the gateway's own register branches read it."""
+    assert load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID=legacy)).tiles_enabled is True
+
+
+def test_a_mac_id_runs_notifications_only():
+    """A Live Activity is an iPhone feature. The fix proposed in the issue
+    widened the phone pattern to any 16 uppercase characters, which would have
+    accepted a Mac id as able to host a tile."""
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="MCABCDEFGH123456"))
+    assert config.tiles_enabled is False
+    assert config.device_kind == "mac"
+
+
+def test_a_browser_id_is_still_a_browser_now_that_phones_have_sixteen_characters():
+    """All three 16-character namespaces are the same length, so only the
+    prefix can separate them."""
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="WBABCDEFGH123456"))
+    assert config.tiles_enabled is False
+    assert config.device_kind == "browser"
+
+
+def test_a_mac_with_alerts_off_is_rejected_and_says_mac():
+    with pytest.raises(ConfigError) as caught:
+        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="MCABCDEFGH123456", ALERTS="off"))
+    assert "a Mac" in str(caught.value)
+
+
+def test_the_rejection_message_names_the_new_shape():
+    """Someone whose phone shows an IO id must be able to tell from the error
+    that their id format is a real one."""
+    with pytest.raises(ConfigError) as caught:
+        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="nonsense"))
+    assert "'IO'" in str(caught.value)
 def test_a_tint_accepts_both_hex_forms_and_normalises_them():
     assert load_config(dict(MINIMAL_ENV, NOTIFY_TINT="7C3AED")).tint == "#7C3AED"
     assert load_config(dict(MINIMAL_ENV, NOTIFY_TINT="#7C3AED")).tint == "#7C3AED"

@@ -135,10 +135,11 @@ async def run(config: Config) -> int:
     if not config.tiles_enabled:
         # Said once, plainly, because otherwise the first question is "why is
         # there no tile" and the answer is not discoverable from anywhere.
+        where = "a browser subscription" if config.device_kind == "browser" else "a Mac"
         log.info(
-            "That device is a browser subscription, so there will be no Lock Screen tiles: "
-            "a Live Activity is an iOS feature. Every print is still followed, and you still "
-            "get a notification when one starts, finishes or fails."
+            "That device is %s, so there will be no Lock Screen tiles: a Live Activity is "
+            "an iPhone feature. Every print is still followed, and you still get a "
+            "notification when one starts, finishes or fails.", where,
         )
 
     alerts = Alerts(config, client) if config.alerts != "off" else None

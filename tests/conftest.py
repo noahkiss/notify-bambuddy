@@ -58,6 +58,7 @@ def make_config(**overrides: Any) -> Config:
         # An iOS device by default, because that is what most of the suite is
         # about. The notifications-only tests override it.
         tiles_enabled=True,
+        device_kind="iphone",
         device_token="XYZ789TOKEN123",
         symbol="printer.fill",
         tint="#00A76F",

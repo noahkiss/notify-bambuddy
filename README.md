@@ -48,9 +48,9 @@ to configure inside BambuBuddy beyond issuing the key.
   or no bar at all; optional metric chips and a tappable button. All optional:
   set nothing and you get a sensible tile. See
   [Choosing how the tile looks](#choosing-how-the-tile-looks).
-- **No iPhone required.** A browser subscription gets the same print-started,
-  finished and failed notifications, on any device that can receive web push.
-  There is no Lock Screen tile in that case, because that part is iOS only.
+- **No iPhone required.** A browser subscription or a Mac gets the same
+  print-started, finished and failed notifications. There is no Lock Screen
+  tile in that case, because that part is iPhone only.
   See [Without an iPhone](#without-an-iphone).
 
 ## What it deliberately does not do
@@ -99,15 +99,16 @@ this service looks.
 
 - **BambuBuddy**, and the ability to create an API key in it.
 - **An iPhone or iPad** running [Notify!](https://getnotifyapp.com), with your
-  **Device ID** and **Token** from **Settings → Device**. Open the app once
-  after installing it: that first launch is what lets a tile appear while the
-  app is closed.
+  **Device ID** and **Token** from **Settings → Device**. The ID is 8
+  characters, or 16 starting `IO` on phones set up since app 6.09.02. Both
+  work. Open the app once after installing it: that first launch is what lets
+  a tile appear while the app is closed.
 
-  A **browser subscription works too**, with the device id that starts `WB`.
-  A Live Activity is an iOS Lock Screen feature, so there is no tile in that
-  case, but every print is still followed and you still get a notification
-  when one starts, finishes or fails. Nothing to configure: the service works
-  out which it is from the id.
+  A **browser subscription** (id starting `WB`) or a **Mac** (id starting `MC`)
+  works too. A Live Activity is an iPhone Lock Screen feature, so there is no
+  tile in that case, but every print is still followed and you still get a
+  notification when one starts, finishes or fails. Nothing to configure: the
+  service works out which it is from the id.
 - **Docker**, wherever BambuBuddy already runs.
 
 The device token is a credential. Treat it like a password.
@@ -145,7 +146,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.1
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -182,7 +183,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.0
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.1
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -201,7 +202,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.0
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.1
 ```
 
 ```bash
@@ -270,7 +271,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.0
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.1
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -559,22 +560,28 @@ A Live Activity is an iOS Lock Screen feature, so a tile needs an iPhone or
 iPad. **Everything else works without one.**
 
 Notify can register a **browser subscription** through its web app, which gives
-you a device id starting `WB`. Put that in `NOTIFY_DEVICE_ID` with its token
-and the service runs in notifications-only mode:
+you a device id starting `WB`, and the **Mac** app gives one starting `MC`. Put
+either in `NOTIFY_DEVICE_ID` with its token and the service runs in
+notifications-only mode:
 
 ```bash
-NOTIFY_DEVICE_ID=WB1a2b3c4d5e6f7g
+NOTIFY_DEVICE_ID=WB1A2B3C4D5E6F7G
 NOTIFY_DEVICE_TOKEN=your_token_here
 ```
 
-**There is nothing to configure.** The service works out which kind of
-subscription it has from the shape of the id and says so once at startup:
+**There is nothing to configure.** The service works out which kind of device
+it has from the shape of the id and says so once at startup:
 
 ```
 That device is a browser subscription, so there will be no Lock Screen tiles:
-a Live Activity is an iOS feature. Every print is still followed, and you still
-get a notification when one starts, finishes or fails.
+a Live Activity is an iPhone feature. Every print is still followed, and you
+still get a notification when one starts, finishes or fails.
 ```
+
+Copy the id exactly as the app shows it. Every Notify id is capital letters
+and digits, so one with a lowercase letter in it is refused at startup with an
+explanation, rather than being accepted here and then rejected by the gateway
+with a bare "not found".
 
 Web push is delivered by the browser, so it reaches Chrome, Firefox and Edge on
 Windows, macOS, Linux and Android, and Safari on macOS. Notifications arrive
