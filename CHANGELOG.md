@@ -3,6 +3,29 @@
 Notable changes, newest first. This project follows
 [semantic versioning](https://semver.org/).
 
+## 0.5.2
+
+### Documentation
+
+- **The README now opens by saying Bambuddy has Notify! built in.** Native
+  Notify! support, with alerts, Live Activities and Lock Screen widgets, reached
+  Bambuddy's dev branch on October 9, 2026. Anyone whose Bambuddy offers
+  Notify! under Settings → Notifications is better served by that than by a
+  separate container, and the first thing on the page now says so, with a link
+  to the [setup guide](https://wiki.bambuddy.cool/features/notifications/#notify).
+
+- **A new section, "Moving to Bambuddy's built-in Notify!",** gives the switch
+  in the order that avoids two tiles per print: set up the built-in provider
+  with its Live Activities off, remove this container, swipe away any tile it
+  left behind, and only then turn Live Activities on. It also says why
+  `ALERTS=off` is not enough on its own (it silences notifications, not
+  tiles), and to turn off any generic webhook provider aimed at Notify!. This
+  matches the migration note on Bambuddy's own wiki.
+
+- **"For the BambuBuddy developer" is retired to a short note.** It asked for
+  native support, which now exists; `docs/UPSTREAM.md` stays as the record of
+  how it was proposed.
+
 ## 0.5.1
 
 ### Fixed

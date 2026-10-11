@@ -1,5 +1,19 @@
 # notify-bambuddy
 
+> [!IMPORTANT]
+> **Bambuddy now has Notify! built in.** If **Settings → Notifications** in your
+> Bambuddy offers **Notify!** as a provider, use that instead of this. It covers
+> alerts and Live Activities, adds Lock Screen widgets, and runs inside
+> Bambuddy with no extra container. See the
+> [setup guide](https://wiki.bambuddy.cool/features/notifications/#notify).
+>
+> Already running this? Follow
+> [Moving to Bambuddy's built-in Notify!](#moving-to-bambuddys-built-in-notify)
+> rather than just switching the other one on, or every print gets two tiles.
+>
+> This companion remains for Bambuddy builds without the built-in provider,
+> which reached Bambuddy's dev branch on October 9, 2026.
+
 Turns BambuBuddy print jobs into **Notify! Live Activities** on iOS: one Lock
 Screen tile per printer that appears when a print starts, updates itself while
 it runs, and disappears when it finishes.
@@ -146,7 +160,7 @@ means the two start and stop together.
 
 ```yaml
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.1
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.2
     container_name: notify-bambuddy
     restart: on-failure:5
     environment:
@@ -183,7 +197,7 @@ with a `docker-compose.yml`:
 ```yaml
 services:
   notify-bambuddy:
-    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.1
+    image: ghcr.io/simplytoast1/notify-bambuddy:0.5.2
     container_name: notify-bambuddy
     restart: on-failure:5
     env_file: [.env]
@@ -202,7 +216,7 @@ and a `.env` beside it, `chmod 600`, holding the four values. Then
 **Or one command, with no files at all:**
 
 ```bash
-docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.1
+docker run -d --name notify-bambuddy --restart on-failure:5 -v notify-bambuddy-state:/data -e BAMBUDDY_URL="http://192.168.1.50:8000" -e BAMBUDDY_API_KEY="bb_paste_your_key_here" -e NOTIFY_DEVICE_ID="ABC12345" -e NOTIFY_DEVICE_TOKEN="paste_your_token_here" -e DRY_RUN=1 ghcr.io/simplytoast1/notify-bambuddy:0.5.2
 ```
 
 ```bash
@@ -256,6 +270,30 @@ credentials on the way up, which is the part you want checked anyway.
 
 ---
 
+## Moving to Bambuddy's built-in Notify!
+
+If your Bambuddy has **Notify!** under **Settings → Notifications**, it can do
+this job itself. Switching takes a few minutes, and the order matters, because
+two things driving the same Lock Screen give you two tiles for every print.
+
+1. **Set up the built-in provider** with the
+   [setup guide](https://wiki.bambuddy.cool/features/notifications/#notify).
+   Leave its **Live Activities** option off for now.
+2. **Stop and remove this container**, as in [Removing it](#removing-it).
+   Setting `ALERTS=off` here is not enough: that only silences the ordinary
+   notifications, and this would carry on creating tiles.
+3. **Swipe away any tile this left on your Lock Screen.** Bambuddy does not take
+   over tiles it did not create, so one left behind would stay there, frozen,
+   until it expires.
+4. **Now turn on Live Activities** in the Bambuddy provider.
+5. If you also send Bambuddy's events to Notify! through a generic **webhook**
+   provider, turn that off too, or every alert arrives twice.
+
+Your device ID and token carry straight over: the built-in provider takes the
+same ones, including the newer 16-character IDs.
+
+---
+
 ## Removing it
 
 Nothing on your printers or in BambuBuddy changes when it goes. It only ever
@@ -271,7 +309,7 @@ docker compose down notify-bambuddy && docker volume rm notify-bambuddy-state
 **If you used `docker run`:**
 
 ```bash
-docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.1
+docker rm -f notify-bambuddy && docker volume rm notify-bambuddy-state && docker rmi ghcr.io/simplytoast1/notify-bambuddy:0.5.2
 ```
 
 That is everything. Nothing was installed outside the container, so there are
@@ -781,19 +819,10 @@ so polling gives a better tile for less setup.
 
 ## For the BambuBuddy developer
 
-If you maintain BambuBuddy, or want to send this upstream:
-**[`docs/UPSTREAM.md`](docs/UPSTREAM.md)**.
-
-It covers two independent options. Four fields BambuBuddy already holds in
-memory (`layer_num`, `total_layers`, `hms_errors`, `subtask_id`) added to
-`GET /api/v1/webhook/printer/{id}/status`, which is twenty minutes and closes
-every gap this add-on works around. Or building it in natively as a provider
-type, with the plumbing mapped against BambuBuddy's own Bark commit and the
-four things that break pre-solved.
-
-It also documents the one thing worth fixing regardless: `remaining_time` is
-minutes on that route and seconds in the notification pipeline, and nothing
-says so.
+Bambuddy now has native Notify! support, merged into its dev branch on October
+9, 2026, which is what this section used to ask for.
+[`docs/UPSTREAM.md`](docs/UPSTREAM.md) is kept as the record of how it was
+proposed.
 
 ---
 
