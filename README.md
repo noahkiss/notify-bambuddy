@@ -334,6 +334,7 @@ Four variables are required. Everything else has a working default.
 | `BAMBUDDY_API_KEY` | *required* | A `read_status` key. A credential |
 | `NOTIFY_DEVICE_ID` | *required* | From Notify → Settings → Device |
 | `NOTIFY_DEVICE_TOKEN` | *required* | From the same screen. A credential |
+| `NOTIFY_BASE_URL` | `https://push.getnotifyapp.com` | Fork only. A self-hosted server that serves the Notify API. With it set, any device id shape is accepted |
 | `BAMBUDDY_POLL_SECONDS` | `10` | How often to ask, while something is printing |
 | `BAMBUDDY_PRINTER_IDS` | all | Comma-separated printer ids, e.g. `1,3` |
 | `ALERTS` | `all` | `all`, `problems`, or `off` |
