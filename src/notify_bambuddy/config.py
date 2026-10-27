@@ -48,6 +48,9 @@ from typing import Optional
 # not whatever the response happens to quote.
 # ---------------------------------------------------------------------------
 NOTIFY_BASE_URL = "https://push.getnotifyapp.com"
+#
+# Fork change: NOTIFY_BASE_URL in the environment overrides the constant, for a
+# self-hosted server that serves the same API. Unset, nothing changes.
 
 
 class ConfigError(Exception):
@@ -139,6 +142,23 @@ def _int_tuple(name: str, env: dict) -> tuple:
         except ValueError:
             raise ConfigError(f"{name} must be a comma separated list of printer ids, got {raw!r}")
     return tuple(values)
+
+
+def _validate_notify_base_url(url: str) -> str:
+    """Normalize and sanity check an overridden Notify base URL."""
+    url = url.strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ConfigError(
+            f"NOTIFY_BASE_URL must start with http:// or https://, got {url!r}"
+        )
+    if not parsed.netloc:
+        raise ConfigError(f"NOTIFY_BASE_URL is missing a host, got {url!r}")
+    if parsed.query or parsed.fragment:
+        raise ConfigError(
+            f"NOTIFY_BASE_URL should not carry a query string or fragment, got {url!r}"
+        )
+    return url
 
 
 def _validate_bambuddy_url(url: str) -> str:
@@ -410,6 +430,9 @@ class Config:
     #: at a real BambuBuddy and watching what it would do, safely.
     dry_run: bool
 
+    #: The Notify API base URL: the gateway, or NOTIFY_BASE_URL when set.
+    notify_base_url: str = NOTIFY_BASE_URL
+
     #: Secret values, for the log redaction filter. Not configuration in its
     #: own right; a convenience so the filter can be installed from one place.
     secrets: tuple[str, ...] = field(default_factory=tuple)
@@ -448,6 +471,10 @@ def load_config(env: Optional[dict] = None) -> Config:
     bambuddy_printer_ids = _int_tuple("BAMBUDDY_PRINTER_IDS", env)
 
     # --- Required: where the tiles go --------------------------------------
+    notify_base_url = _str("NOTIFY_BASE_URL", env, "")
+    notify_base_url = (
+        _validate_notify_base_url(notify_base_url) if notify_base_url else NOTIFY_BASE_URL
+    )
     device_id = _read_secret("NOTIFY_DEVICE_ID", env)
     device_token = _read_secret("NOTIFY_DEVICE_TOKEN", env)
     if not device_id or not device_token:
@@ -476,6 +503,9 @@ def load_config(env: Optional[dict] = None) -> Config:
     elif _MAC_DEVICE_ID_RE.match(device_id):
         # Likewise. A Live Activity is an iPhone Lock Screen feature.
         device_kind = "mac"
+    elif notify_base_url != NOTIFY_BASE_URL:
+        # A self-hosted server mints its own ids, in no shape known here.
+        device_kind = "iphone"
     else:
         raise ConfigError(
             f"NOTIFY_DEVICE_ID {device_id!r} is not a Notify device id. Copy it exactly from "
@@ -649,6 +679,7 @@ def load_config(env: Optional[dict] = None) -> Config:
         health_port=_int("HEALTH_PORT", env, 9337, minimum=1, maximum=65535),
         log_level=log_level,
         dry_run=_bool("DRY_RUN", env, False),
+        notify_base_url=notify_base_url,
         secrets=tuple(s for s in (device_token, bambuddy_api_key) if s),
     )
     return config

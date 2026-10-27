@@ -380,3 +380,33 @@ def test_the_default_state_path_is_writable_by_an_ordinary_user():
     store.close()
     import os
     os.remove(config.state_db)
+
+
+# ---------------------------------------------------------------------------
+# Fork: a self-hosted Notify-compatible server
+# ---------------------------------------------------------------------------
+
+
+def test_the_base_url_defaults_to_the_gateway():
+    from notify_bambuddy.config import NOTIFY_BASE_URL
+
+    assert load_config(MINIMAL_ENV).notify_base_url == NOTIFY_BASE_URL
+
+
+def test_the_base_url_can_be_overridden():
+    config = load_config(dict(MINIMAL_ENV, NOTIFY_BASE_URL="http://push.example:4372/"))
+    assert config.notify_base_url == "http://push.example:4372"
+
+
+@pytest.mark.parametrize("bad", ["ftp://push.example", "push.example", "http://", "https://push.example/?a=1"])
+def test_a_bad_base_url_is_refused(bad):
+    with pytest.raises(ConfigError, match="NOTIFY_BASE_URL"):
+        load_config(dict(MINIMAL_ENV, NOTIFY_BASE_URL=bad))
+
+
+def test_a_self_hosted_server_takes_any_device_id():
+    config = load_config(dict(
+        MINIMAL_ENV, NOTIFY_BASE_URL="http://push.example:4372", NOTIFY_DEVICE_ID="x2d"))
+    assert config.tiles_enabled is True
+    with pytest.raises(ConfigError, match="not a Notify device id"):
+        load_config(dict(MINIMAL_ENV, NOTIFY_DEVICE_ID="x2d"))

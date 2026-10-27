@@ -1,0 +1,36 @@
+# Fork build: the patched image, amd64 only, on a `<version>-heraldo.<n>` tag.
+# The upstream publish workflow keeps its own `v*` tags.
+
+name: Heraldo image
+
+on:
+  push:
+    tags: ['*-heraldo.*']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  build:
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    uses: noahkiss/workflows/.github/workflows/ghcr-build-push.yml@main
+    with:
+      tags: |
+        type=ref,event=tag
+        type=raw,value=heraldo
+      build_args: |
+        BUILD_SHA=${{ github.sha }}

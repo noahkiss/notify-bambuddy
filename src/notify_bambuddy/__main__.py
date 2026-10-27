@@ -32,7 +32,7 @@ from typing import Any, Optional
 from . import BUILD, __version__
 from .alerts import Alerts
 from .bambuddy_api import APISource, BambuBuddyAuthError, BambuBuddyError
-from .config import Config, ConfigError, NOTIFY_BASE_URL, load_config
+from .config import Config, ConfigError, load_config
 from .coordinator import Coordinator
 from .health import HealthServer
 from .notify_client import NotifyAuthError, NotifyClient, NotifyError
@@ -109,7 +109,7 @@ async def run(config: Config) -> int:
 
     store = Store(config.state_db)
     client = NotifyClient(
-        NOTIFY_BASE_URL, config.device_id, config.device_token, dry_run=config.dry_run
+        config.notify_base_url, config.device_id, config.device_token, dry_run=config.dry_run
     )
 
     # --- Credential check --------------------------------------------------
